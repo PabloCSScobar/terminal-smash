@@ -140,7 +140,9 @@ class World:
         p = self.player
         if self.time < self.move_until:
             p.vx = self.direction * 40.0
-        else:
+        elif p.grounded:
+            # Jump input may replace movement autorepeat in a terminal.
+            # Brake on the ground; retain horizontal momentum through the jump.
             p.vx *= math.exp(-24.0 * dt)
         p.x = max(1.0, min(self.width - 2.0, p.x + p.vx * dt))
         old_y = p.y

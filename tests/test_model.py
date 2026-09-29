@@ -117,6 +117,71 @@ class PhysicsTests(unittest.TestCase):
         self.assertTrue(world.player.grounded)
         self.assertEqual(world.player.y, 28)
 
+    def test_running_jump_keeps_horizontal_momentum_without_more_move_keys(self):
+        for fps in (30, 60, 90, 144):
+            for direction in (-1, 1):
+                with self.subTest(fps=fps, direction=direction):
+                    world = World([], 200, 30)
+                    world.player.y = 28
+                    world.player.grounded = True
+                    world.move(direction)
+                    world.update(0.1)
+                    world.jump()
+                    takeoff_x = world.player.x
+                    # The jump key replaces movement autorepeat in a terminal.
+                    for _ in range(fps // 2):
+                        world.update(1 / fps)
+                    self.assertFalse(world.player.grounded)
+                    self.assertAlmostEqual((world.player.x - takeoff_x) * direction, 20, delta=0.2)
+
+    def test_stationary_jump_stays_vertical(self):
+        world = World([], 200, 30)
+        world.player.y = 28
+        world.player.grounded = True
+        takeoff_x = world.player.x
+        world.jump()
+        for _ in range(80):
+            world.update(1 / 90)
+            self.assertEqual(world.player.x, takeoff_x)
+        self.assertTrue(world.player.grounded)
+
+    def test_double_jump_keeps_momentum_and_airborne_direction_can_change(self):
+        world = World([], 200, 30)
+        world.player.y = 28
+        world.player.grounded = True
+        world.move(1)
+        world.jump()  # Both key events may be read in the same frame.
+        for _ in range(27):
+            world.update(1 / 90)
+        takeoff_x = world.player.x
+        world.jump()
+        for _ in range(18):
+            world.update(1 / 90)
+        self.assertGreater(world.player.x - takeoff_x, 7)
+        turn_x = world.player.x
+        world.move(-1)
+        for _ in range(27):
+            world.update(1 / 90)
+        self.assertLess(world.player.x - turn_x, -11)
+        self.assertFalse(world.player.grounded)
+
+    def test_landing_brakes_after_a_running_jump(self):
+        world = World([], 200, 30)
+        world.player.y = 28
+        world.player.grounded = True
+        world.move(1)
+        world.jump()
+        for _ in range(90):
+            world.update(1 / 90)
+            if world.player.grounded:
+                break
+        self.assertTrue(world.player.grounded)
+        landing_x = world.player.x
+        for _ in range(45):
+            world.update(1 / 90)
+        self.assertLess(world.player.x - landing_x, 2)
+        self.assertLess(abs(world.player.vx), 0.01)
+
     def test_particles_expire_and_motion_stays_in_bounds(self):
         world = World([Cell(10, 5, 'X')], 30, 20, seed=2)
         world.destroy(10, 5, 2, 2)

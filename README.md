@@ -31,7 +31,7 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | Klawisz | Działanie |
 | --- | --- |
 | A / D lub ← / → | Ruch |
-| W, ↑ lub Spacja | Skok |
+| W, ↑ lub Spacja | Skok z zachowaniem rozpędu (także podwójny) |
 | J | Uderzenie w stronę ruchu |
 | K | Wybuch wokół postaci |
 | S lub ↓ | Zejście przez platformę |
@@ -39,6 +39,8 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | R | Odtworzenie tekstu i reset |
 | ? | Pomoc |
 | Esc lub Q | Powrót do terminala |
+
+Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz zmienić kierunek przez A/D lub strzałki; skok z miejsca pozostaje pionowy.
 
 ## Tryby uruchomienia
 
