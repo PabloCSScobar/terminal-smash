@@ -190,7 +190,12 @@ class PhysicsTests(unittest.TestCase):
             world.update(1 / 60)
         self.assertEqual(world.player.x, 1)
         self.assertFalse(world.particles)
-        self.assertAlmostEqual(world.player.y, 18)
+        self.assertEqual(world.grip_surface, 'left')
+        self.assertTrue(2 <= world.player.y <= 18)
+        hanging_y = world.player.y
+        for _ in range(60):
+            world.update(1 / 60)
+        self.assertEqual(world.player.y, hanging_y)
 
 
 if __name__ == '__main__':

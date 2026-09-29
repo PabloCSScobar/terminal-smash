@@ -18,12 +18,64 @@ class TraversalTests(unittest.TestCase):
         world.player.x = 1 if surface == 'left' else width - 2
         world.player.y = height - 5
         if surface == 'ceiling':
-            world.player.x, world.player.y = width / 2, 2
-        self.assertFalse(world.grip_enabled)
-        world.toggle_grip()
+            world.player.x, world.player.y = width / 2, 2.1
+            world.player.vy = -21
+        self.assertTrue(world.grip_enabled)
         world.update(1 / 90)
         self.assertEqual(world.grip_surface, surface)
         return world
+
+    def test_new_game_and_interior_return_to_top_fall_without_ceiling_grab(self):
+        for fps in (30, 90):
+            world = World([], 80, 35)
+            self.assertTrue(world.grip_enabled)
+            self.assertEqual(world.grip_surface, '')
+            advance(world, 0.3, fps)
+            self.assertGreater(world.player.y, 2)
+            self.assertEqual(world.grip_surface, '')
+            world.return_to_top()
+            advance(world, 0.3, fps)
+            self.assertGreater(world.player.y, 2)
+            self.assertEqual(world.grip_surface, '')
+            world.reset()
+            advance(world, 0.3, fps)
+            self.assertGreater(world.player.y, 2)
+            self.assertEqual(world.grip_surface, '')
+
+    def test_upward_ceiling_contact_attaches_automatically_at_different_frame_rates(self):
+        for fps in (30, 90):
+            world = World([], 80, 35)
+            world.player.y = 5
+            world.jump()
+            advance(world, 0.5, fps)
+            self.assertEqual(world.grip_surface, 'ceiling')
+            self.assertEqual(world.player.y, 2)
+            advance(world, 0.5, fps)
+            self.assertEqual(world.player.y, 2)
+            world.jump()
+            advance(world, 0.4, fps)
+            self.assertEqual(world.grip_surface, '')
+            self.assertGreater(world.player.y, 2)
+
+    def test_ceiling_contact_and_release_survive_long_frames(self):
+        for elapsed in (0.12, 0.5, 2.0):
+            world = World([], 80, 35)
+            world.player.y = 3.5
+            world.jump()
+            world.update(elapsed)
+            self.assertEqual(world.grip_surface, 'ceiling')
+            self.assertEqual(world.player.y, 2)
+            world.jump()
+            world.update(elapsed)
+            self.assertEqual(world.grip_surface, '')
+            self.assertGreater(world.player.y, 2)
+
+    def test_reset_restores_automatic_wall_attachment_without_enabling_it(self):
+        world = self.attached('left')
+        world.reset()
+        world.player.x, world.player.y = world.width - 2, 18
+        world.update(1 / 90)
+        self.assertEqual(world.grip_surface, 'right')
 
     def test_floor_wall_ceiling_route_reaches_isolated_upper_platform_without_top(self):
         for fps in (30, 90):
@@ -33,7 +85,7 @@ class TraversalTests(unittest.TestCase):
                 advance(world, 1.5, fps)
                 self.assertTrue(world.player.grounded)
                 self.assertEqual(world.player.y, 33)
-                world.toggle_grip()
+                self.assertTrue(world.grip_enabled)
                 advance(world, 0.8, fps, lambda: world.move(-1))
                 self.assertEqual(world.grip_surface, 'left')
                 advance(world, 2.1, fps, world.climb_up)
@@ -61,7 +113,6 @@ class TraversalTests(unittest.TestCase):
                     with self.subTest(size=(width, height), fps=fps, surface=surface):
                         world = World([], width, height)
                         world.player.x, world.player.y = x, height - 2
-                        world.toggle_grip()
                         world.update(1 / fps)
                         self.assertEqual(world.grip_surface, surface)
                         for _ in range(math.ceil((height / 16 + 0.3) * fps)):
@@ -135,7 +186,6 @@ class TraversalTests(unittest.TestCase):
                 world = World([], 80, 35)
                 world.player.x = 1 if surface == 'left' else 78
                 world.player.y = 18
-                world.toggle_grip()
                 if attach_first:
                     world.update(1 / 90)
                 x = world.player.x
@@ -150,8 +200,7 @@ class TraversalTests(unittest.TestCase):
             world = World([], 80, 35)
             world.player.y = 33
             world.player.grounded = True
-            if enabled:
-                world.toggle_grip()
+            world.grip_enabled = enabled
             world.climb_up()
             self.assertEqual(world.grip_surface, '')
             self.assertLess(world.player.vy, 0)
@@ -210,7 +259,6 @@ class TraversalTests(unittest.TestCase):
         cells += [Cell(c.x + 45, c.y + 12, c.char) for c in parse_capture('ERROR', 80, 35)]
         world = World(cells, 80, 35, seed=3)
         world.player.x, world.player.y = 1, 20
-        world.toggle_grip()
         world.update(1 / 90)
         world.destroy(25, 6, 0.4, 0.4)
         chunk = world.falling[0]
@@ -228,7 +276,6 @@ class TraversalTests(unittest.TestCase):
         world = World(parse_capture('ERROR', 80, 35), 80, 35)
         world.time = 2
         world.player.x, world.player.y = 1, 20
-        world.toggle_grip()
         world.update(1 / 90)
         enemy = world.enemies[0]
         enemy.x, enemy.y = 2, 20

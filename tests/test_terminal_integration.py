@@ -185,7 +185,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
-    def test_gravity_and_grip_survive_reset_challenge_and_resize(self):
+    def test_gravity_and_automatic_grip_survive_reset_challenge_and_resize(self):
         # Full repaint makes the actual PTY status readable as complete text;
         # ncurses normally emits only the changed "N" / "FF" bytes on toggles.
         # The CLI, input loop, world, record store and curses renderer are real.
@@ -201,21 +201,20 @@ class TerminalIntegrationTests(unittest.TestCase):
         terminal = Terminal([sys.executable, "-c", child])
         try:
             terminal.until(b"falling ON")
+            terminal.until(b"Grip AUTO")
             offset = len(terminal.output)
             terminal.send(b"G")
             terminal.until(b"falling OFF", after=offset)
-            offset = len(terminal.output)
-            terminal.send(b"E")
-            terminal.until(b"E grip ON", after=offset)
+            terminal.until(b"Grip AUTO", after=offset)
 
             # Charging the blast makes the reset observable, even though the
             # gravity status itself is expected to remain unchanged.
             offset = len(terminal.output)
             terminal.send(b"k")
-            terminal.until(b"falling OFF | E grip ON | K blast recharging", after=offset)
+            terminal.until(b"falling OFF | Grip AUTO | K blast recharging", after=offset)
             offset = len(terminal.output)
             terminal.send(b"R")
-            terminal.until(b"falling OFF | E grip ON | K blast ready", after=offset)
+            terminal.until(b"falling OFF | Grip AUTO | K blast ready", after=offset)
 
             for key, mode in ((b"C", b"CHALLENGE"), (b"c", b"FREE PLAY")):
                 offset = len(terminal.output)
@@ -223,7 +222,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 terminal.until(mode, after=offset)
                 mode_offset = terminal.output.index(mode, offset)
                 terminal.until(b"falling OFF", after=mode_offset)
-                terminal.until(b"E grip ON", after=mode_offset)
+                terminal.until(b"Grip AUTO", after=mode_offset)
 
             # Passing through an unplayable size removes the old footer, so
             # the next OFF label must come from the rebuilt larger world.
@@ -233,14 +232,11 @@ class TerminalIntegrationTests(unittest.TestCase):
             offset = len(terminal.output)
             terminal.resize(32, 120)
             terminal.until(b"falling OFF", after=offset)
-            terminal.until(b"E grip ON", after=offset)
+            terminal.until(b"Grip AUTO", after=offset)
             offset = len(terminal.output)
             terminal.send(b"g")
             terminal.until(b"falling ON", after=offset)
-            terminal.until(b"E grip ON", after=offset)
-            offset = len(terminal.output)
-            terminal.send(b"e")
-            terminal.until(b"E grip OFF", after=offset)
+            terminal.until(b"Grip AUTO", after=offset)
 
             terminal.send(b"\x1b")
             self.assertEqual(terminal.finish(), 0)
@@ -387,6 +383,8 @@ class TerminalIntegrationTests(unittest.TestCase):
         # damage cooldown. The real collision code decides HP, knockback and
         # death; the real input loop saves the result and handles restart.
         child = (
+            "import json, os, re\n"
+            "from pathlib import Path\n"
             "from terminal_smash import ui\n"
             "from terminal_smash.model import World, Enemy\n"
             "def contact(world):\n"
@@ -401,12 +399,36 @@ class TerminalIntegrationTests(unittest.TestCase):
             "def redraw(win, *args, **kwargs):\n"
             "    win.redrawwin()\n"
             "    draw(win, *args, **kwargs)\n"
+            "    rows, columns = win.getmaxyx()\n"
+            "    lines = [win.instr(row, 0, columns - 1).decode('utf-8', errors='replace') "
+            "for row in range(rows)]\n"
+            "    state = Path(os.environ['XDG_STATE_HOME']) / 'health-screen.json'\n"
+            "    temporary = state.with_suffix('.tmp')\n"
+            "    temporary.write_text(json.dumps(dict(columns=columns, header=lines[0], "
+            "bar_rows=[row for row, line in enumerate(lines) if re.search(r'\\[[#-]{10,}\\]', line)])))\n"
+            "    temporary.replace(state)\n"
             "ui._draw = redraw\n"
             "ui.run('plain session output', label='health', challenge=True)\n"
         )
         terminal = Terminal([sys.executable, "-c", child], rows=30, columns=100)
+        state_file = Path(terminal.state_directory.name) / "health-screen.json"
+
+        def check_health_header(columns: int):
+            def inspect():
+                terminal.pump(0.015)
+                if not state_file.exists():
+                    return None
+                state = json.loads(state_file.read_text())
+                if state["columns"] == columns and "HP 5/5" in state["header"]:
+                    return state
+                return None
+            state = _eventually(inspect)
+            self.assertRegex(state["header"], r"HP 5/5 \[#{10,}\]  SCORE ")
+            self.assertEqual(state["bar_rows"], [0], "Health belongs only in the header")
+
         try:
             terminal.until(b"HP 5/5")
+            check_health_header(100)
             offset = len(terminal.output)
             terminal.send(b"k")
             terminal.until(b"HP 4/5", after=offset)
@@ -433,16 +455,18 @@ class TerminalIntegrationTests(unittest.TestCase):
             offset = len(terminal.output)
             terminal.resize(14, 44)
             terminal.until(b"HP 5/5", after=offset)
+            check_health_header(44)
             terminal.send(b"\x1b")
             self.assertEqual(terminal.finish(), 0)
             self.assertNotIn(b"Traceback", bytes(terminal.output))
         finally:
             terminal.close()
 
-    def test_real_grip_controls_climb_hang_move_and_release(self):
+    def test_real_automatic_grip_climb_hang_move_and_release(self):
         # Choose only a reproducible starting position. Input, traversal,
         # gravity and rendering remain production code; telemetry observes
         # resulting positions rather than replacing the movement methods.
+        # No grip toggle or other setup key is sent: attachment is automatic.
         child = (
             "import json, os\n"
             "from pathlib import Path\n"
@@ -478,7 +502,6 @@ class TerminalIntegrationTests(unittest.TestCase):
 
         try:
             terminal.until(b"TERMINAL SMASH")
-            terminal.send(b"E")
             attached = motion(lambda state: state["surface"] == "left")
             self.assertTrue(attached["enabled"])
             terminal.send(b"s")
@@ -503,7 +526,7 @@ class TerminalIntegrationTests(unittest.TestCase):
             self.assertEqual(moved["surface"], "ceiling")
             terminal.send(b" ")
             released = motion(lambda state: state["surface"] == "" and state["y"] > 2.1)
-            self.assertTrue(released["enabled"], "Jump detaches without disabling grip mode")
+            self.assertTrue(released["enabled"], "Jump detaches without disabling automatic grip")
             terminal.send(b"\x1b")
             self.assertEqual(terminal.finish(), 0)
             self.assertNotIn(b"Traceback", bytes(terminal.output))

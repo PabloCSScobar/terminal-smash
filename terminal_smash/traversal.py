@@ -1,4 +1,4 @@
-"""Optional wall climbing and ceiling hanging for the arcade player.
+"""Automatic wall climbing and ceiling hanging for the arcade player.
 
 The mixin handles only player motion. World still advances falling terrain,
 enemies, damage and visual effects on every physics step while the player hangs.
@@ -12,7 +12,7 @@ class TraversalMixin:
     GRIP_RELEASE_DELAY = 0.24
 
     def _reset_traversal(self) -> None:
-        self.grip_enabled = getattr(self, 'grip_enabled', False)
+        self.grip_enabled = getattr(self, 'grip_enabled', True)
         self.grip_surface = ''
         self._climb_direction = 0
         self._climb_until = 0.0
@@ -34,7 +34,7 @@ class TraversalMixin:
         self._climb_until = 0.0
         self._grip_cooldown = self.time + self.GRIP_RELEASE_DELAY
 
-    def _try_grip(self) -> bool:
+    def _try_grip(self, dt: float = 0.0) -> bool:
         if (not self.grip_enabled or self.finished or self.slamming
                 or self.time < self._grip_cooldown
                 or self.time < self.dash_until or self.time < self.attack_until):
@@ -42,7 +42,11 @@ class TraversalMixin:
         if self.grip_surface:
             return True
         p = self.player
-        if p.y <= 2.0 + 1e-7:
+        # The player starts (and T returns them) at y=2 without upward
+        # momentum. That position alone must not make a new game hang. Detect
+        # upward contact before World clamps y and removes vertical velocity.
+        next_y = p.y + (p.vy + 54.0 * dt) * dt
+        if p.vy < 0 and (p.y <= 2.0 + 1e-7 or next_y <= 2.0):
             self.grip_surface = 'ceiling'
             p.y = 2.0
         elif p.x <= 1.0 + 1e-7:
@@ -109,7 +113,7 @@ class TraversalMixin:
 
     def _step_traversal(self, dt: float) -> bool:
         """Return whether attachment has handled this step's player movement."""
-        if not self._try_grip():
+        if not self._try_grip(dt):
             return False
         p = self.player
         p.grounded = False

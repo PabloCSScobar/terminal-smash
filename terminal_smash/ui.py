@@ -89,7 +89,7 @@ HELP_LINES = [
     'A / D or arrows   run / steer in the air',
     'W / up            jump / climb up a wall',
     'Space             jump / release wall or ceiling',
-    'E                 toggle wall and ceiling grip',
+    'Walls and ceiling grip automatically at the edge.',
     'J                 punch',
     'K                 blast',
     'L                 dash through text',
@@ -350,20 +350,27 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
 
     health_color = 82 if p.hp > 2 else (220 if p.hp > 1 else 196)
     health_attr = palette.attr(Style(fg=health_color, bold=True))
-    health_bar = '[' + '#' * p.hp + '-' * (p.max_hp - p.hp) + ']'
-    # At the ceiling there is no spare row above the head; the HUD stays visible.
-    scene(round(p.y) - 1, max(0, min(cols - len(health_bar), round(p.x) - len(health_bar) // 2)),
-          health_bar, health_attr, len(health_bar))
 
-    # UI is drawn last so effects never cover controls or score.
-    _put(win, 0, 0, ' TERMINAL SMASH ', palette.attr(Style(fg=16, bg=51, bold=True)))
-    _put(win, 0, 17, f'HP {p.hp}/{p.max_hp} {health_bar}', health_attr)
+    # Keep health next to the score, leaving captured text clear around the actor.
     score = f'SCORE {world.score}'
     if record and world.duration is not None and cols >= 62:
-        score += f'  BEST {record.best}'
-    _put(win, 0, max(33, cols - len(score) - 1), score, yellow)
-    if cols >= 100:
-        _put(win, 0, 33, label[:max(0, cols - len(score) - 36)], dim)
+        with_best = score + f'  BEST {record.best}'
+        if len(with_best) + 26 <= cols:
+            score = with_best
+    score_x = max(0, cols - len(score) - 1)
+    health_prefix = f'HP {p.hp}/{p.max_hp} '
+    bar_width = max(10, min(20, score_x - len(health_prefix) - 12))
+    filled = round(bar_width * p.hp / max(1, p.max_hp))
+    health = health_prefix + '[' + '#' * filled + '-' * (bar_width - filled) + ']'
+    health_x = max(0, score_x - len(health) - 2)
+    title = ' TERMINAL SMASH ' if health_x >= 17 else ' SMASH '
+    if len(title) < health_x:
+        _put(win, 0, 0, title, palette.attr(Style(fg=16, bg=51, bold=True)))
+        label_width = health_x - len(title) - 2
+        if cols >= 100 and label_width > 0:
+            _put(win, 0, len(title) + 1, label[:label_width], dim)
+    _put(win, 0, health_x, health, health_attr)
+    _put(win, 0, score_x, score, yellow)
     mode = 'FREE PLAY' if world.duration is None else f'CHALLENGE {world.time_left:04.1f}s'
     _put(win, 1, 0, mode, yellow if world.time_left is not None and world.time_left < 10 else cyan)
     ratio = world.destroyed * 100 // world.total if world.total else 0
@@ -378,15 +385,14 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
         _put(win, max(3, rows // 2), max(0, (cols - 37) // 2), 'ALL SMASHED! R rebuild / C challenge', yellow)
     elif not world.total:
         _put(win, max(3, rows // 2), 1, 'Empty snapshot. Esc, run a command, retry.', dim)
-    hint = ' A/D run  SPACE jump  E grip  J hit K blast  L dash X slam  C 30s ? ESC '
+    hint = ' A/D run  W climb  SPACE jump  J hit K blast  L dash X slam C 30s ? ESC '
     if cols < len(hint):
-        hint = ' A/D SPACE E grip J/K L X C ? ESC '
+        hint = ' A/D W climb SPACE J/K L X C ? ESC '
     _put(win, rows - 2, 0, hint, cyan)
     blast = 'recharging' if world.time < world.next_blast else 'ready'
     dash = 'recharging' if world.time < world.next_dash else 'ready'
     gravity = 'ON' if world.falling_enabled else 'OFF'
-    grip = 'ON' if world.grip_enabled else 'OFF'
-    note = f' G falling {gravity} | E grip {grip} | K blast {blast} | T top R reset'
+    note = f' G falling {gravity} | Grip AUTO | K blast {blast} | T top R reset'
     if cols >= len(note) + len(dash) + 10:
         note += f' | L {dash}'
     if record and record.error:
@@ -400,7 +406,7 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
 
 def _new_world(text: str, rows: int, cols: int, challenge: bool,
                falling_enabled: bool = True, *, demo: bool = False,
-               grip_enabled: bool = False) -> World:
+               grip_enabled: bool = True) -> World:
     if demo:
         text = build_demo(cols, rows - 5)
     content_rows = text.rstrip('\r\n').count('\n') + 1
@@ -426,7 +432,6 @@ def _main(win, text: str, label: str, challenge: bool = False,
     world = None
     record = None
     dimensions = None
-    grip_enabled = False
     help_open = False
     help_page = 0
     last = time.monotonic()
@@ -438,8 +443,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
         rebuilt = False
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
-            world = _new_world(text, rows, cols, challenge, falling_enabled,
-                               demo=demo, grip_enabled=grip_enabled)
+            world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
             record = RoundRecord(world)
             rebuilt = True
         # Advance the old state before accepting new actions, so a key arriving
@@ -470,14 +474,12 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 continue
             if key in (ord('c'), ord('C')):
                 challenge = not challenge
-                world = _new_world(text, rows, cols, challenge, falling_enabled,
-                               demo=demo, grip_enabled=grip_enabled)
+                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('g'), ord('G')):
                 falling_enabled = not falling_enabled
-                world = _new_world(text, rows, cols, challenge, falling_enabled,
-                               demo=demo, grip_enabled=grip_enabled)
+                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
@@ -488,9 +490,6 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 world.move(-1)
             elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
                 world.move(1)
-            elif key in (ord('e'), ord('E')):
-                world.toggle_grip()
-                grip_enabled = world.grip_enabled
             elif key in (ord('w'), ord('W'), curses.KEY_UP):
                 world.climb_up()
             elif key == ord(' '):

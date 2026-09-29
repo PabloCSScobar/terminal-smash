@@ -28,6 +28,8 @@ Jeśli `~/.local/bin` nie znajduje się w `PATH`, instalator pokaże polecenie d
 
 PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamiaj wewnątrz swojej dystrybucji WSL. To nie jest natywny plugin PowerShella.
 
+Komunikaty gry, pomoc, diagnostyka, błędy oraz instalator są po angielsku. Tekst przechwycony z terminala pozostaje w swoim oryginalnym języku.
+
 ## Sterowanie
 
 | Klawisz | Działanie |
@@ -35,7 +37,6 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | A / D lub ← / → | Ruch |
 | W / ↑ | Skok z zachowaniem rozpędu; podczas chwytu wspinanie po ścianie |
 | Spacja | Skok (także podwójny); puszczenie ściany lub sufitu |
-| E | Włączenie/wyłączenie chwytu bocznych ścian i sufitu |
 | J | Uderzenie w stronę ruchu |
 | K | Wybuch wokół postaci |
 | L | Dash w stronę ruchu, także w powietrzu |
@@ -50,11 +51,11 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 
 Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz zmienić kierunek przez A/D lub strzałki; skok z miejsca pozostaje pionowy. Połącz skok, dash i uderzenie w dół, aby dobrać się do podpór pod kilkoma piętrami tekstu.
 
-Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Postać ma **5 punktów życia**, pokazanych w nagłówku oraz paskiem nad głową (przy samym suficie pozostaje wskaźnik w nagłówku). Kontakt z przeciwnikiem `ERROR` zabiera jeden punkt, odrzuca postać i przerywa serię. Po trafieniu działa krótka ochrona przed kolejnymi obrażeniami; dash oraz uderzenie w dół pozwalają przebić się przez przeciwnika. Przy zerowym życiu pojawia się **GAME OVER**; **R** odtwarza tekst, przeciwników i pełne życie.
+Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Postać ma **5 punktów życia**, pokazanych wyłącznie dłuższym paskiem w nagłówku, bezpośrednio na lewo od wyniku. Kontakt z przeciwnikiem `ERROR` zabiera jeden punkt, odrzuca postać i przerywa serię. Po trafieniu działa krótka ochrona przed kolejnymi obrażeniami; dash oraz uderzenie w dół pozwalają przebić się przez przeciwnika. Przy zerowym życiu pojawia się **GAME OVER**; **R** odtwarza tekst, przeciwników i pełne życie.
 
 Przy ustawieniu **G falling ON** naruszone fragmenty tracące ostatnią podporę spadają i rozbijają niższe linie. Przy **OFF** nietrafione znaki pozostają w powietrzu i nadal można po nich chodzić. Zmiana klawiszem **G** rozpoczyna planszę i wynik od nowa; wybór pozostaje aktywny po **R**, **C** i zmianie rozmiaru okna. Tekst wiszący od początku migawki pozostaje na miejscu do chwili naruszenia, więc plansza nie rozsypuje się sama po starcie.
 
-**E** włącza chwyt bez restartowania gry. Dojdź do lewego lub prawego brzegu, aby złapać boczną ścianę, i używaj **W/↑** do wspinania, **S/↓** do schodzenia. Bez naciskania klawiszy postać trzyma się ściany. Na górze przechodzi na sufit: **A/D** przesuwa ją nad wybraną platformę, a **Spacja** lub **S/↓** pozwala spaść na tekst. Spacja na ścianie odbija do środka planszy; ruch od ściany także ją puszcza. Dash, slam, wyłączenie chwytu i trafienie przeciwnika zwalniają chwyt. Ustawienie **E grip ON/OFF** pozostaje po **R**, **C**, **G** i zmianie rozmiaru okna.
+Chwyt działa **automatycznie przy krawędziach** i nie wymaga włączania klawiszem. Dojdź do lewego lub prawego brzegu, aby złapać boczną ścianę, i używaj **W/↑** do wspinania, **S/↓** do schodzenia. Bez naciskania klawiszy postać trzyma się ściany. Na górze przechodzi na sufit: **A/D** przesuwa ją nad wybraną platformę, a **Spacja** lub **S/↓** pozwala spaść na tekst. Spacja na ścianie odbija do środka planszy; ruch od ściany także ją puszcza. Dash, slam i trafienie przeciwnika zwalniają chwyt na chwilę. Automatyczny chwyt działa także po **R**, **C**, **G** i zmianie rozmiaru okna. Sam start planszy nie przykleja postaci do sufitu; łapiesz go podczas wspinania lub skoku do górnej krawędzi.
 
 Demo dopasowuje ilość tekstu do rozmiaru okna. Po obu bokach są schodki od podłogi do górnej części planszy, oddalone maksymalnie o trzy wiersze; można wspinać się zwykłymi skokami. Schodki również da się zniszczyć. **T/Home** pozostaje szybkim powrotem na górę.
 

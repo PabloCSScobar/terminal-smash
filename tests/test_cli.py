@@ -28,8 +28,22 @@ class CliTests(unittest.TestCase):
         error = io.StringIO()
         with patch.dict(os.environ, {}, clear=True), contextlib.redirect_stderr(error):
             self.assertEqual(cli.main([]), 1)
+        self.assertIn("To smash the text in your terminal, enter tmux", error.getvalue())
         self.assertIn("--session", error.getvalue())
         self.assertIn("--demo", error.getvalue())
+
+    def test_doctor_reports_environment_in_english(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(cli.sys.stdin, "isatty", return_value=False), \
+                patch.object(cli.shutil, "which", return_value=None), \
+                patch.object(cli, "_tmux_version", return_value="tmux 3.4"), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(["--doctor"]), 0)
+        self.assertIn("Interactive terminal: no", output.getvalue())
+        self.assertIn("tmux session: no", output.getvalue())
+        self.assertIn("Launcher in PATH: not found (run ./install.sh)", output.getvalue())
+        self.assertIn("Session with your own text: terminal-smash --session", output.getvalue())
 
     def test_demo_does_not_require_tmux(self):
         with patch.object(cli, "_render", return_value=0) as render, patch.object(cli, "_tmux") as tmux:
@@ -157,12 +171,12 @@ class CliTests(unittest.TestCase):
             source.write_bytes(b"test\xff")
             self.assertEqual(cli._read_file(source), "test\ufffd")
             with patch.object(cli, "MAX_FILE_BYTES", 4):
-                with self.assertRaisesRegex(cli.UserError, "za duży"):
+                with self.assertRaisesRegex(cli.UserError, "too large"):
                     cli._read_file(source)
 
     def test_render_requires_real_terminal(self):
         with patch.object(cli.sys.stdin, "isatty", return_value=False):
-            with self.assertRaisesRegex(cli.UserError, "interaktywnego"):
+            with self.assertRaisesRegex(cli.UserError, "interactive terminal"):
                 cli._render("text", "test")
 
     def test_session_executes_tmux_attach_or_create(self):
@@ -219,12 +233,16 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue(launcher.is_symlink())
             help_result = subprocess.run([str(launcher), "--help"], text=True, capture_output=True)
             self.assertEqual(help_result.returncode, 0, help_result.stderr)
+            self.assertIn("play a 30-second survival challenge", help_result.stdout)
+            self.assertIn("--file FILE", help_result.stdout)
+            self.assertIn("Installed:", first.stdout)
             second = self.install(root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(config.read_text(), installed_config)
             self.assertEqual(installed_config.count("# >>> terminal-smash"), 1)
             removal = self.install(root, "--uninstall")
             self.assertEqual(removal.returncode, 0, removal.stderr)
+            self.assertIn("Terminal Smash uninstalled.", removal.stdout)
             self.assertEqual(config.read_text(), original)
             self.assertFalse(launcher.exists())
             self.assertFalse((root / "config" / "tmux.conf").exists())
@@ -238,6 +256,7 @@ class InstallerTests(unittest.TestCase):
             launcher.write_text("my unrelated tool")
             result = self.install(root)
             self.assertEqual(result.returncode, 1)
+            self.assertIn("will not be overwritten", result.stderr)
             self.assertEqual(launcher.read_text(), "my unrelated tool")
             self.assertFalse((root / ".tmux.conf").exists())
 

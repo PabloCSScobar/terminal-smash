@@ -41,6 +41,12 @@ class DemoTests(unittest.TestCase):
                         world.jump()
                         for _ in range(90):
                             world.update(1 / 90)
+                            if world.grip_surface == 'ceiling':
+                                # The last jump now catches the ceiling. Space
+                                # releases onto the real row-3 stair below it.
+                                self.assertEqual(world.player.y, 2)
+                                self.assertIn((round(world.player.x), 3), world.occupied)
+                                world.jump()
                             if world.player.grounded:
                                 break
                         self.assertTrue(world.player.grounded)

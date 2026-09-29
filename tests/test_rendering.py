@@ -1,6 +1,7 @@
 """Regression tests for restoring text beneath moving sprites and overlays."""
 
 import unittest
+import re
 import unicodedata
 from unittest.mock import patch
 
@@ -116,25 +117,37 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(len(self.screen.grid[0]), 45)
         self.assertEqual(self.screen.grid[6][20], 'N')
 
-    def test_health_bar_follows_actor_and_hud_survives_ceiling_and_small_screen(self):
-        for rows, cols in ((14, 44), (24, 80)):
+    def test_long_health_bar_is_only_in_header_immediately_left_of_score(self):
+        for rows, cols in ((14, 44), (24, 80), (40, 160)):
             with self.subTest(rows=rows, cols=cols):
                 self.screen = Canvas(rows, cols)
                 self.world = World([], cols, rows - 4)
                 self.world.player.x, self.world.player.y = 12, 7
                 self.world.player.hp = 3
                 with patch('terminal_smash.ui.curses.doupdate'):
-                    _draw(self.screen, self.world, self.palette, '', False, self.layer)
-                    self.assertIn('HP 3/5', ''.join(self.screen.grid[0]))
-                    self.assertIn('[###--]', ''.join(self.screen.grid[6]))
-                    self.world.player.x, self.world.player.y = cols - 2, 2
-                    self.world.grip_enabled = True
-                    self.world.grip_surface = 'ceiling'
-                    self.world.player.hp = 1
-                    _draw(self.screen, self.world, self.palette, '', False, self.layer)
-                    self.assertIn('HP 1/5 [#----]', ''.join(self.screen.grid[0]))
-                    self.assertNotIn('[###--]', ''.join(self.screen.grid[6]))
-                    self.assertIn('E grip ON', ''.join(self.screen.grid[-1]))
+                    for health, y in ((3, 7), (1, 2), (5, 5)):
+                        self.world.player.y = y
+                        self.world.player.hp = health
+                        _draw(self.screen, self.world, self.palette, '', False, self.layer)
+                        header = ''.join(self.screen.grid[0])
+                        match = re.search(r'HP ' + str(health) + r'/5 \[([#-]{10,20})\]  SCORE 0', header)
+                        self.assertIsNotNone(match, header)
+                        bar = match.group(1)
+                        self.assertAlmostEqual(bar.count('#') / len(bar), health / 5, delta=0.05)
+                        if cols >= 80:
+                            self.assertEqual(len(bar), 20)
+                        scene = '\n'.join(''.join(row) for row in self.screen.grid[2:-3])
+                        self.assertIsNone(re.search(r'\[[#-]+\]', scene))
+                        self.assertIn('Grip AUTO', ''.join(self.screen.grid[-1]))
+
+    def test_large_scores_do_not_overwrite_health_on_small_screen(self):
+        self.screen = Canvas(14, 44)
+        self.world = World([], 44, 10)
+        self.world.score = 10**12
+        with patch('terminal_smash.ui.curses.doupdate'):
+            _draw(self.screen, self.world, self.palette, '', False, self.layer)
+        header = ''.join(self.screen.grid[0])
+        self.assertIn('HP 5/5 [##########]  SCORE 1000000000000', header)
 
     def test_death_overlay_has_restart_and_correct_mode_switch(self):
         for duration, switch in ((None, 'challenge'), (30, 'free play')):

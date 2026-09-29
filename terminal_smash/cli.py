@@ -36,29 +36,29 @@ def _tmux(arguments: Sequence[str], *, check: bool = True) -> subprocess.Complet
             errors="replace",
         )
     except FileNotFoundError as exc:
-        raise UserError("Brak tmux. W Ubuntu/WSL zainstaluj go: sudo apt install tmux") from exc
+        raise UserError("tmux is missing. On Ubuntu/WSL, install it with: sudo apt install tmux") from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip()
-        raise UserError(f"tmux: {detail or 'polecenie zakończyło się błędem'}") from exc
+        raise UserError(f"tmux: {detail or 'command failed'}") from exc
 
 
 def _tmux_version() -> str:
     version = _tmux(["-V"]).stdout.strip()
     match = re.search(r"\btmux\s+(\d+)\.(\d+)", version)
     if not match or tuple(map(int, match.groups())) < MIN_TMUX:
-        raise UserError(f"Potrzebny jest tmux 3.4 lub nowszy (wykryto: {version or 'nieznany'}).")
+        raise UserError(f"tmux 3.4 or later is required (detected: {version or 'unknown'}).")
     return version
 
 
 def _render(text: str, label: str, *, challenge: bool = False,
             falling_enabled: bool = True, demo: bool = False) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        raise UserError("Animacja wymaga interaktywnego terminala. Uruchom ją w oknie WSL.")
+        raise UserError("The game requires an interactive terminal. Run it in a WSL terminal window.")
     try:
         import curses
         from .ui import run
     except ImportError as exc:
-        raise UserError("Brak modułu curses. Uruchom program w Pythonie 3 na Linuxie/WSL.") from exc
+        raise UserError("The curses module is missing. Run the game with Python 3 on Linux/WSL.") from exc
     try:
         options = {}
         if challenge:
@@ -69,7 +69,7 @@ def _render(text: str, label: str, *, challenge: bool = False,
             options['demo'] = True
         run(text, label=label, **options)
     except curses.error as exc:
-        raise UserError(f"Nie można uruchomić ekranu terminala: {exc}") from exc
+        raise UserError(f"Cannot initialize the terminal screen: {exc}") from exc
     return 0
 
 
@@ -78,10 +78,10 @@ def _read_file(path: Path) -> str:
         with path.open("rb") as handle:
             raw = handle.read(MAX_FILE_BYTES + 1)
         if len(raw) > MAX_FILE_BYTES:
-            raise UserError("Plik jest za duży. Maksymalny rozmiar migawki to 2 MiB.")
+            raise UserError("File is too large. The maximum snapshot size is 2 MiB.")
         return raw.decode("utf-8", errors="replace")
     except OSError as exc:
-        raise UserError(f"Nie można odczytać pliku {path}: {exc.strerror or exc}") from exc
+        raise UserError(f"Cannot read file {path}: {exc.strerror or exc}") from exc
 
 
 def _launch_popup(
@@ -90,24 +90,24 @@ def _launch_popup(
 ) -> int:
     if not os.environ.get("TMUX"):
         raise UserError(
-            "Aby rozbijać tekst swojego terminala, wejdź do tmux:\n"
+            "To smash the text in your terminal, enter tmux:\n"
             "  terminal-smash --session\n"
-            "Następnie naciśnij Ctrl+b, potem Shift+s (po instalacji),\n"
-            "albo wpisz: terminal-smash\n"
-            "Pokaz bez tmux: terminal-smash --demo"
+            "Then press Ctrl+b, followed by Shift+s (after installation),\n"
+            "or run: terminal-smash\n"
+            "Demo without tmux: terminal-smash --demo"
         )
     _tmux_version()
     target = pane or os.environ.get("TMUX_PANE")
     if not target:
         target = _tmux(["display-message", "-p", "#{pane_id}"]).stdout.strip()
     if not re.fullmatch(r"%\d+", target):
-        raise UserError("Panel musi mieć identyfikator tmux, np. %0 (sprawdź: tmux list-panes).")
+        raise UserError("Use a tmux pane ID, such as %0 (check with: tmux list-panes).")
 
     # Capture before displaying the popup: the original pane continues to exist.
     captured = _tmux(["capture-pane", "-p", "-e", "-t", target]).stdout
     launcher = Path(__file__).resolve().parent.parent / "terminal-smash"
     if not launcher.is_file():
-        raise UserError(f"Brak launchera {launcher}. Uruchom ponownie install.sh.")
+        raise UserError(f"Launcher not found: {launcher}. Run install.sh again.")
     # A private directory keeps terminal contents inaccessible to other users.
     # It lives only as long as the synchronous popup command.
     with tempfile.TemporaryDirectory(prefix="terminal-smash-") as temporary:
@@ -132,41 +132,41 @@ def _launch_popup(
 def _doctor() -> int:
     print(f"Python: {sys.version.split()[0]}")
     print(f"System: {sys.platform}")
-    print(f"Interaktywny terminal: {'tak' if sys.stdin.isatty() and sys.stdout.isatty() else 'nie'}")
-    print(f"Sesja tmux: {'tak' if os.environ.get('TMUX') else 'nie'}")
-    print(f"Launcher w PATH: {shutil.which('terminal-smash') or 'nie (uruchom ./install.sh)'}")
+    print(f"Interactive terminal: {'yes' if sys.stdin.isatty() and sys.stdout.isatty() else 'no'}")
+    print(f"tmux session: {'yes' if os.environ.get('TMUX') else 'no'}")
+    print(f"Launcher in PATH: {shutil.which('terminal-smash') or 'not found (run ./install.sh)'}")
     try:
         import curses  # noqa: F401
         print("curses: OK")
     except ImportError:
-        print("curses: BRAK — potrzebny Python na Linuxie/WSL")
+        print("curses: MISSING - Python on Linux/WSL is required")
         return 1
     try:
         print(f"tmux: {_tmux_version()}")
     except UserError as exc:
         print(str(exc))
         return 1
-    print("Test animacji: terminal-smash --demo")
-    print("Sesja z własnym tekstem: terminal-smash --session")
+    print("Try the game: terminal-smash --demo")
+    print("Session with your own text: terminal-smash --session")
     return 0
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="terminal-smash",
-        description="Ludzik ASCII rozbija tekst widocznego panelu tmux (Linux/WSL).",
+        description="An ASCII character smashes text in the visible tmux pane (Linux/WSL).",
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--demo", action="store_true", help="kolorowy pokaz bez tmux")
-    mode.add_argument("--file", type=Path, metavar="PLIK", help="animuj tekst z pliku, bez tmux")
+    mode.add_argument("--demo", action="store_true", help="play the colorful demo without tmux")
+    mode.add_argument("--file", type=Path, metavar="FILE", help="play with text from a file, without tmux")
     mode.add_argument("--snapshot", type=Path, help=argparse.SUPPRESS)
-    mode.add_argument("--doctor", action="store_true", help="sprawdź środowisko")
-    mode.add_argument("--session", action="store_true", help="otwórz/przyłącz sesję tmux o nazwie smash")
-    parser.add_argument("--challenge", action="store_true", help="demolka na czas: 30 sekund i lokalny rekord")
+    mode.add_argument("--doctor", action="store_true", help="check the environment")
+    mode.add_argument("--session", action="store_true", help="create or attach to the tmux session named smash")
+    parser.add_argument("--challenge", action="store_true", help="play a 30-second survival challenge with local records")
     parser.add_argument("--gravity", choices=("on", "off"), default=None,
-                        help="spadanie naruszonego tekstu: on (domyślnie) lub off")
-    parser.add_argument("--pane", metavar="ID", help="identyfikator panelu tmux, np. %%0")
-    parser.add_argument("--client", metavar="TTY", help="klient tmux, w którym otworzyć animację")
+                        help="falling damaged text: on (default) or off")
+    parser.add_argument("--pane", metavar="ID", help="tmux pane ID, such as %%0")
+    parser.add_argument("--client", metavar="TTY", help="tmux client in which to open the game")
     parser.add_argument("--label", default=None, help=argparse.SUPPRESS)
     return parser
 
@@ -175,11 +175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     if args.gravity is not None and (args.doctor or args.session):
-        parser.error("--gravity wymaga planszy: --demo, --file albo panelu tmux")
+        parser.error("--gravity requires a game: use --demo, --file or a tmux pane")
     if args.challenge and (args.doctor or args.session):
-        parser.error("--challenge wymaga planszy: --demo, --file albo panelu tmux")
+        parser.error("--challenge requires a game: use --demo, --file or a tmux pane")
     if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session)):
-        parser.error("--pane i --client dotyczą tylko przechwytywania panelu tmux")
+        parser.error("--pane and --client apply only to tmux pane capture")
     render_options = {"challenge": True} if args.challenge else {}
     if args.gravity == "off":
         render_options["falling_enabled"] = False
@@ -189,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.session:
             _tmux_version()
             if os.environ.get("TMUX"):
-                raise UserError("Jesteś już w tmux. Naciśnij Ctrl+b, potem Shift+s, albo wpisz terminal-smash.")
+                raise UserError("You are already in tmux. Press Ctrl+b, then Shift+s, or run terminal-smash.")
             os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "smash"])
             return 0
         if args.demo:
