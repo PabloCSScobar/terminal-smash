@@ -44,6 +44,23 @@ class FallingChunk:
     cells: list[Cell]
     offset_y: float = 0.0
     vy: float = 1.0
+    row: int = field(init=False)
+    left: int = field(init=False)
+    right: int = field(init=False)
+    centre_x: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        # Chunks are horizontal runs. Cache their bounds once, rather than
+        # revisiting every glyph during every physics substep and attack.
+        self.refresh_bounds()
+
+    def refresh_bounds(self) -> None:
+        if self.cells:
+            self.row = self.cells[0].y
+            self.left = min(cell.x for cell in self.cells)
+            self.right = max(cell.x + cell.width for cell in self.cells)
+            self.centre_x = sum(cell.x + (cell.width - 1) / 2
+                                for cell in self.cells) / len(self.cells)
 
 
 @dataclass
@@ -69,13 +86,15 @@ class World:
     """Coordinates are character cells; player.y is the row occupied by feet."""
 
     def __init__(self, cells: list[Cell], width: int, height: int,
-                 seed: int | None = None, *, duration: float | None = None):
+                 seed: int | None = None, *, duration: float | None = None,
+                 falling_enabled: bool = True):
         self.width = max(8, width)
         self.height = max(6, height)
         self.original = tuple(cells)
         self.rng = random.Random(seed)
         self.duration = max(0.0, duration) if duration is not None else None
         self.terrain_revision = 0
+        self.falling_enabled = falling_enabled
         self.reset()
 
     @property
@@ -91,6 +110,10 @@ class World:
         self.cells = {(c.x, c.y): c for c in self.original
                       if 0 <= c.x and c.x + c.width <= self.width
                       and 0 <= c.y < self.height - 1}
+        self.cells_by_row: list[dict[int, Cell]] = [{} for _ in range(self.height)]
+        self.terrain_row_revisions = [0] * self.height
+        for cell in self.cells.values():
+            self.cells_by_row[cell.y][cell.x] = cell
         self.occupied = {(c.x + dx, c.y): (c.x, c.y)
                          for c in self.cells.values() for dx in range(c.width)}
         self.total = len(self.cells)
@@ -143,6 +166,8 @@ class World:
 
     def _remove(self, key: tuple[int, int]) -> Cell:
         cell = self.cells.pop(key)
+        del self.cells_by_row[cell.y][cell.x]
+        self.terrain_row_revisions[cell.y] += 1
         for dx in range(cell.width):
             self.occupied.pop((cell.x + dx, cell.y), None)
         return cell
@@ -288,6 +313,8 @@ class World:
         a removed support falls once no letters directly underneath support it.
         Cascades are driven by local occupancy lookups, with bounded live chunks.
         """
+        if not self.falling_enabled:
+            return
         pending: deque[tuple[int, int]] = deque()
 
         def neighbours(cell: Cell) -> None:
@@ -302,11 +329,15 @@ class World:
 
         for cell in removed:
             neighbours(cell)
-        seen: set[tuple[int, int]] = set()
+        seen: dict[tuple[int, int], tuple[int, int]] = {}
         examined = 0
         while pending and len(self.falling) + self._pending_falling < 80 and examined < 8192:
             key = pending.popleft()
-            if key not in self.cells or key in seen or key[1] == 0:
+            if key not in self.cells or key[1] == 0:
+                continue
+            row = key[1]
+            revision = (self.terrain_row_revisions[row], self.terrain_row_revisions[row + 1])
+            if seen.get(key) == revision:
                 continue
             run: dict[tuple[int, int], Cell] = {}
             stack = [key]
@@ -320,7 +351,7 @@ class World:
                     neighbour = self.occupied.get((col, cell.y))
                     if neighbour is not None and neighbour not in run:
                         stack.append(neighbour)
-            seen.update(run)
+            seen.update((key, revision) for key in run)
             examined += len(run)
             supported = any((c.x + dx, c.y + 1) in self.occupied
                             for c in run.values() for dx in range(c.width))
@@ -329,8 +360,8 @@ class World:
             detached = [self._remove(key) for key in sorted(run)]
             self.falling.append(FallingChunk(detached))
             self.terrain_revision += 1
-            # A run examined earlier may become unsupported by this detachment.
-            seen.clear()
+            # Only this row and the row above need reconsideration. Revision
+            # checks leave all other examined runs cached through the cascade.
             for cell in detached:
                 neighbours(cell)
 
@@ -340,6 +371,9 @@ class World:
         count = self._destroy_static(self._ellipse_keys(x, y, rx, ry), x, y)
         # Detached letters remain destructible in flight, including wide glyphs.
         for chunk in self.falling:
+            cy = chunk.row + chunk.offset_y
+            if abs(cy - y) > ry or chunk.right - 1 < x - rx or chunk.left > x + rx:
+                continue
             survivors = []
             for cell in chunk.cells:
                 if (((cell.x + (cell.width - 1) / 2 - x) / rx) ** 2
@@ -349,7 +383,9 @@ class World:
                     self.destroyed += 1
                 else:
                     survivors.append(cell)
-            chunk.cells = survivors
+            if len(survivors) != len(chunk.cells):
+                chunk.cells = survivors
+                chunk.refresh_bounds()
         self.falling = [chunk for chunk in self.falling if chunk.cells]
         bonus = 0
         for enemy in self.enemies:
@@ -495,13 +531,17 @@ class World:
             old_offset = chunk.offset_y
             chunk.vy = min(42.0, chunk.vy + 38.0 * dt)
             chunk.offset_y += chunk.vy * dt
+            old_row = math.floor(chunk.row + old_offset)
+            new_row = math.floor(chunk.row + chunk.offset_y)
+            floor_hit = new_row >= self.height - 2
+            if old_row == new_row and not floor_hit:
+                self.falling.append(chunk)
+                continue
             hit: set[tuple[int, int]] = set()
-            floor_hit = False
-            for cell in chunk.cells:
-                old_row = math.floor(cell.y + old_offset)
-                new_row = math.floor(cell.y + chunk.offset_y)
-                floor_hit |= new_row >= self.height - 2
-                for row in range(max(0, old_row + 1), min(self.height - 2, new_row) + 1):
+            for row in range(max(0, old_row + 1), min(self.height - 2, new_row) + 1):
+                if not self.cells_by_row[row]:
+                    continue
+                for cell in chunk.cells:
                     for dx in range(cell.width):
                         key = self.occupied.get((cell.x + dx, row))
                         if key is not None:
@@ -509,7 +549,7 @@ class World:
             if not hit and not floor_hit:
                 self.falling.append(chunk)
                 continue
-            x = sum(c.x + (c.width - 1) / 2 for c in chunk.cells) / len(chunk.cells)
+            x = chunk.centre_x
             y = min(self.height - 2, chunk.cells[0].y + chunk.offset_y)
             count = self._destroy_static(hit, x, y)
             for cell in chunk.cells:

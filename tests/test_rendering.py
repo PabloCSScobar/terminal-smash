@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from terminal_smash.capture import Cell
 from terminal_smash.model import World
-from terminal_smash.ui import RoundRecord, TerrainLayer, _actor_pose
+from terminal_smash.ui import RoundRecord, TerrainLayer, _actor_pose, _text_runs
 
 
 class Canvas:
@@ -14,6 +14,7 @@ class Canvas:
 
     def __init__(self, rows, cols):
         self.rows, self.cols = rows, cols
+        self.writes = []
         self.erase()
 
     def getmaxyx(self):
@@ -23,6 +24,7 @@ class Canvas:
         self.grid = [[' ' for _ in range(self.cols)] for _ in range(self.rows)]
 
     def addstr(self, y, x, text, attr=0):
+        self.writes.append((y, x, text))
         for character in text:
             self.grid[y][x] = character
             width = 2 if unicodedata.east_asian_width(character) in ('W', 'F') else 1
@@ -69,6 +71,34 @@ class RenderingTests(unittest.TestCase):
         self.world.reset()
         self.draw()
         self.assertEqual(self.screen.grid[7][10:12], ['界', '~'])
+
+    def test_damage_repaints_only_affected_rows_on_a_large_scene(self):
+        self.screen = Canvas(60, 200)
+        self.world = World([Cell(x, y, '#') for y in range(54) for x in range(200)], 200, 56, falling_enabled=False)
+        self.draw()
+        self.assertLessEqual(len(self.layer.window.writes), 54)
+        self.layer.window.writes.clear()
+        self.world.destroy(100, 25, 0.4, 0.4)
+        self.draw()
+        self.assertEqual(self.screen.grid[27][100], ' ')
+        self.assertEqual(self.screen.grid[26][100], '#')
+        self.assertEqual(self.screen.grid[28][100], '#')
+        self.assertEqual({y for y, _, _ in self.layer.window.writes}, {27})
+        self.assertLessEqual(len(self.layer.window.writes), 3)
+
+    def test_falling_run_cache_refreshes_when_letters_are_hit(self):
+        self.world = World([Cell(5, 5, 'A'), Cell(6, 5, 'B'), Cell(5, 6, '|')], 80, 20)
+        self.world.destroy(5, 6, 0.4, 0.4)
+        chunk = self.world.falling[0]
+        self.assertEqual(self.layer.falling_runs(chunk)[0][2], 'AB')
+        self.world.destroy(5, 5, 0.4, 0.4)
+        self.assertEqual(self.layer.falling_runs(chunk)[0][2], 'B')
+
+    def test_grouped_runs_keep_wide_and_combining_characters_atomic(self):
+        cells = [Cell(0, 0, '界', width=2), Cell(2, 0, 'e\u0301'), Cell(4, 0, 'X')]
+        runs = _text_runs(cells)
+        self.assertEqual([(row, x, text, width) for row, x, text, width, _ in runs],
+                         [(0, 0, '界e\u0301', 3), (0, 4, 'X', 1)])
 
     def test_new_scene_and_window_dimensions_replace_old_text(self):
         self.draw()

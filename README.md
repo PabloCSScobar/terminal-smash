@@ -4,7 +4,7 @@ Ludzik ASCII, który biega po tekście terminala, przebija się przez litery das
 
 Dash zostawia smugę, uderzenie z powietrza wyrzuca odłamki na boki, a podcięte podpory wywołują zawalenia i reakcje łańcuchowe. Postać ma animacje biegu, skoku, ataku i lądowania. Kolejne trafienia budują combo i mnożnik punktów; czerwone słowa `ERROR` ożywają i ścigają gracza. Możesz swobodnie rozbijać planszę albo włączyć 30-sekundową demolkę z lokalnym rekordem.
 
-Naciśnięcia klawiszy budzą pętlę gry od razu, nieruchomy tekst jest buforowany, a liczba odłamków pozostaje ograniczona. Eksplozje animują odłamki bez przesuwania całego ekranu.
+Naciśnięcia klawiszy budzą pętlę gry od razu. Po trafieniu odświeżane są tylko zmienione wiersze, a całe fragmenty tekstu są rysowane zbiorczo. Spadające fragmenty sprawdzają kolizje po przekroczeniu kolejnego wiersza, a liczba odłamków pozostaje ograniczona. Eksplozje animują odłamki bez przesuwania całego ekranu.
 
 W trybie tmux gra używa kolorowej migawki widocznego panelu. Tekst staje się platformami, a uderzenia wyrzucają znaki w powietrze. Wyjście z gry wraca do prawdziwego terminala; uruchomione programy i historia powłoki działają dalej.
 
@@ -42,6 +42,7 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | T lub Home | Powrót postaci na górę bez odtwarzania tekstu |
 | R | Odtworzenie tekstu i nowa runda w aktualnym trybie |
 | C | Przełączenie swobodnej demolki / rundy 30 s i nowy start |
+| G | Spadanie tekstu ON/OFF i rozpoczęcie planszy od nowa |
 | ? | Pomoc i pauza, również zatrzymanie zegara rundy |
 | Esc lub Q | Powrót do terminala |
 
@@ -49,13 +50,17 @@ Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz
 
 Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Kontakt z przeciwnikiem `ERROR` odrzuca postać i przerywa serię; dash oraz uderzenie w dół pozwalają przebić się przez niego.
 
-Fragmenty tracące ostatnią podporę spadają i rozbijają niższe linie. Tekst wiszący od początku migawki pozostaje na miejscu do chwili naruszenia, więc plansza nie rozsypuje się sama po starcie.
+Przy ustawieniu **G falling ON** naruszone fragmenty tracące ostatnią podporę spadają i rozbijają niższe linie. Przy **OFF** nietrafione znaki pozostają w powietrzu i nadal można po nich chodzić. Zmiana klawiszem **G** rozpoczyna planszę i wynik od nowa; wybór pozostaje aktywny po **R**, **C** i zmianie rozmiaru okna. Tekst wiszący od początku migawki pozostaje na miejscu do chwili naruszenia, więc plansza nie rozsypuje się sama po starcie.
+
+Demo dopasowuje ilość tekstu do rozmiaru okna. Po obu bokach są schodki od podłogi do górnej części planszy, oddalone maksymalnie o trzy wiersze; można wspinać się zwykłymi skokami. Schodki również da się zniszczyć. **T/Home** pozostaje szybkim powrotem na górę.
 
 ## Tryby uruchomienia
 
 ```bash
 terminal-smash               # migawka bieżącego panelu tmux
-terminal-smash --demo        # kolorowa plansza pokazowa; tmux nie jest potrzebny
+terminal-smash --demo        # plansza dopasowana do okna, ze schodkami
+terminal-smash --demo --gravity off # tekst zostaje w powietrzu
+terminal-smash --gravity on  # spadanie naruszonego tekstu w panelu tmux
 terminal-smash --demo --challenge # demolka planszy pokazowej na czas
 terminal-smash --challenge   # 30-sekundowa runda na migawce panelu tmux
 terminal-smash --file log.txt # tekst z pliku UTF-8, do 2 MiB
@@ -64,13 +69,13 @@ terminal-smash --doctor      # diagnostyka środowiska
 python3 -m terminal_smash --demo # uruchomienie z katalogu źródeł
 ```
 
-`--pane %0` i `--client /dev/pts/0` służą do jawnego wskazania panelu i klienta tmux; skrót klawiszowy przekazuje je automatycznie. `--challenge` można łączyć z `--demo`, `--file` lub przechwytywaniem panelu tmux.
+`--pane %0` i `--client /dev/pts/0` służą do jawnego wskazania panelu i klienta tmux; skrót klawiszowy przekazuje je automatycznie. `--challenge` i `--gravity on|off` można łączyć z `--demo`, `--file` lub przechwytywaniem panelu tmux. Nowe uruchomienie domyślnie włącza spadanie (`on`); opcja `--gravity off` uruchamia grę bez niego.
 
 ## Demolka na czas i rekordy
 
 Runda trwa do 30 sekund aktywnej gry; pełne wyczyszczenie planszy kończy ją wcześniej. Buduj combo kolejnymi trafieniami i zawaleniami, aby zwiększać mnożnik punktów. Po końcu rundy wynik zostaje na ekranie; **R** rozpoczyna kolejną próbę, a **C** wraca do swobodnej demolki. Pomoc pod **?** zatrzymuje czas. Zmiana rozmiaru terminala rozpoczyna nową rundę i odtwarza tekst.
 
-Rekord jest osobny dla tej samej planszy i rozmiaru terminala. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
+Rekord jest osobny dla tej samej planszy, rozmiaru terminala i ustawienia spadania tekstu. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
 
 ## Instalacja i usunięcie
 

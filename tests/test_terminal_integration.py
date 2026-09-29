@@ -185,6 +185,82 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
+    def test_gravity_toggle_survives_reset_challenge_and_resize(self):
+        # Full repaint makes the actual PTY status readable as complete text;
+        # ncurses normally emits only the changed "N" / "FF" bytes on toggles.
+        # The CLI, input loop, world, record store and curses renderer are real.
+        child = (
+            "from terminal_smash import cli, ui\n"
+            "draw = ui._draw\n"
+            "def redraw(win, *args, **kwargs):\n"
+            "    win.redrawwin()\n"
+            "    draw(win, *args, **kwargs)\n"
+            "ui._draw = redraw\n"
+            "raise SystemExit(cli.main(['--demo']))\n"
+        )
+        terminal = Terminal([sys.executable, "-c", child])
+        try:
+            terminal.until(b"falling ON")
+            offset = len(terminal.output)
+            terminal.send(b"G")
+            terminal.until(b"falling OFF", after=offset)
+
+            # Charging the blast makes the reset observable, even though the
+            # gravity status itself is expected to remain unchanged.
+            offset = len(terminal.output)
+            terminal.send(b"k")
+            terminal.until(b"falling OFF | K blast recharging", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"R")
+            terminal.until(b"falling OFF | K blast ready", after=offset)
+
+            for key, mode in ((b"C", b"CHALLENGE"), (b"c", b"FREE PLAY")):
+                offset = len(terminal.output)
+                terminal.send(key)
+                terminal.until(mode, after=offset)
+                mode_offset = terminal.output.index(mode, offset)
+                terminal.until(b"falling OFF", after=mode_offset)
+
+            # Passing through an unplayable size removes the old footer, so
+            # the next OFF label must come from the rebuilt larger world.
+            offset = len(terminal.output)
+            terminal.resize(10, 50)
+            terminal.until(b"Resize to at least", after=offset)
+            offset = len(terminal.output)
+            terminal.resize(32, 120)
+            terminal.until(b"falling OFF", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"g")
+            terminal.until(b"falling ON", after=offset)
+
+            terminal.send(b"\x1b")
+            self.assertEqual(terminal.finish(), 0)
+            self.assertNotIn(b"Traceback", bytes(terminal.output))
+            restored = termios.tcgetattr(terminal.slave)
+            self.assertEqual(
+                restored[3] & (termios.ECHO | termios.ICANON),
+                terminal.original_mode[3] & (termios.ECHO | termios.ICANON),
+            )
+        finally:
+            terminal.close()
+
+    def test_cli_can_start_demo_with_gravity_disabled(self):
+        terminal = Terminal([sys.executable, str(LAUNCHER), "--demo", "--gravity", "off"])
+        try:
+            terminal.until(b"falling OFF")
+            self.assertIsNone(terminal.process.poll())
+            self.assertNotIn(b"falling ON", bytes(terminal.output))
+            terminal.send(b"\x1b")
+            self.assertEqual(terminal.finish(), 0)
+            self.assertNotIn(b"Traceback", bytes(terminal.output))
+            restored = termios.tcgetattr(terminal.slave)
+            self.assertEqual(
+                restored[3] & (termios.ECHO | termios.ICANON),
+                terminal.original_mode[3] & (termios.ECHO | termios.ICANON),
+            )
+        finally:
+            terminal.close()
+
     def test_short_terminal_help_pages_and_resumes_gameplay(self):
         terminal = Terminal([sys.executable, str(LAUNCHER), "--demo"], rows=14, columns=60)
         try:

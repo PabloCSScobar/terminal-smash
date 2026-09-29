@@ -34,13 +34,13 @@ class CliTests(unittest.TestCase):
     def test_demo_does_not_require_tmux(self):
         with patch.object(cli, "_render", return_value=0) as render, patch.object(cli, "_tmux") as tmux:
             self.assertEqual(cli.main(["--demo"]), 0)
-        render.assert_called_once_with(cli.DEMO_TEXT, "demo")
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True)
         tmux.assert_not_called()
 
     def test_challenge_demo_does_not_require_tmux(self):
         with patch.object(cli, "_render", return_value=0) as render, patch.object(cli, "_tmux") as tmux:
             self.assertEqual(cli.main(["--demo", "--challenge"]), 0)
-        render.assert_called_once_with(cli.DEMO_TEXT, "demo", challenge=True)
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, challenge=True)
         tmux.assert_not_called()
 
     def test_challenge_reads_file_and_internal_snapshot(self):
@@ -72,13 +72,34 @@ class CliTests(unittest.TestCase):
     def test_challenge_popup_keeps_flag_with_private_snapshot(self):
         self._check_popup(fail=False, challenge=True)
 
+    def test_gravity_off_reaches_demo_ui_and_popup(self):
+        with patch.object(cli, "_render", return_value=0) as render:
+            self.assertEqual(cli.main(["--demo", "--gravity", "off"]), 0)
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, falling_enabled=False)
+        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+            self.assertEqual(cli.main(["--gravity", "off", "--challenge"]), 0)
+        launch.assert_called_once_with(None, None, "terminal", challenge=True, falling_enabled=False)
+        self._check_popup(fail=False, challenge=True, falling_enabled=False)
+
+    def test_render_forwards_responsive_demo_and_gravity_setting(self):
+        with patch.object(cli.sys.stdin, "isatty", return_value=True), patch.object(cli.sys.stdout, "isatty", return_value=True), patch("terminal_smash.ui.run") as run:
+            self.assertEqual(cli._render("arena", "demo", demo=True, falling_enabled=False), 0)
+        run.assert_called_once_with("arena", label="demo", demo=True, falling_enabled=False)
+
+    def test_gravity_setting_rejects_non_game_commands(self):
+        for argument in ("--doctor", "--session"):
+            with self.subTest(argument=argument), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    cli.main([argument, "--gravity", "off"])
+                self.assertEqual(error.exception.code, 2)
+
     def test_snapshot_is_private_safely_quoted_and_removed(self):
         self._check_popup(fail=False)
 
     def test_snapshot_is_removed_after_popup_error(self):
         self._check_popup(fail=True)
 
-    def _check_popup(self, fail, challenge=False):
+    def _check_popup(self, fail, challenge=False, falling_enabled=True):
         real_temporary_directory = tempfile.TemporaryDirectory
         with real_temporary_directory(prefix="smash tests '$ ") as directory:
             root = Path(directory)
@@ -99,7 +120,7 @@ class CliTests(unittest.TestCase):
                 shell = shlex.split(arguments[-1])
                 self.assertEqual(shell[0], str(root / "terminal-smash"))
                 self.assertEqual(shell[1], "--snapshot")
-                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []))
+                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []) + ([] if falling_enabled else ["--gravity", "off"]))
                 snapshot = Path(shell[2])
                 snapshot_paths.append(snapshot)
                 self.assertEqual(snapshot.read_text(), source)
@@ -112,9 +133,9 @@ class CliTests(unittest.TestCase):
             with patch.dict(os.environ, {"TMUX": "socket,1,0", "TMUX_PANE": "%2"}), patch.object(cli, "__file__", str(root / "terminal_smash" / "cli.py")), patch.object(cli, "_tmux", side_effect=mock_tmux), patch.object(cli.tempfile, "TemporaryDirectory", side_effect=lambda **kw: real_temporary_directory(dir=root, **kw)):
                 if fail:
                     with self.assertRaisesRegex(cli.UserError, "popup failed"):
-                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge)
+                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled)
                 else:
-                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge), 0)
+                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled), 0)
             self.assertEqual([command[0] for command in seen], ["-V", "capture-pane", "display-popup"])
             self.assertEqual(len(snapshot_paths), 1)
             self.assertFalse(snapshot_paths[0].parent.exists())

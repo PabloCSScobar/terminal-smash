@@ -22,6 +22,9 @@ class ArcadePhysicsTests(unittest.TestCase):
             for dx in range(cell.width):
                 self.assertEqual(world.occupied[(cell.x + dx, cell.y)], (cell.x, cell.y))
         self.assertEqual(len(world.occupied), sum(c.width for c in world.cells.values()))
+        indexed = {(x, row): cell for row, cells in enumerate(world.cells_by_row)
+                   for x, cell in cells.items()}
+        self.assertEqual(indexed, world.cells)
 
     def test_dash_sweeps_path_without_skipping_letters_and_keeps_momentum(self):
         cells = [Cell(x, 9, '#') for x in (8, 12, 16, 20, 24, 50)]
@@ -80,6 +83,52 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertFalse(world.slamming)
         self.assertEqual(world.player.y, 22)
         self.assertTrue(world.player.grounded)
+
+    def test_gravity_off_keeps_unsupported_letters_solid_and_animated_debris(self):
+        bridge = [Cell(x, 8, '=') for x in range(6, 16)]
+        world = World(bridge + [Cell(10, 9, '|')], 50, 25, falling_enabled=False)
+        self.assertEqual(world.destroy(10, 9, 0.4, 0.4), 1)
+        self.assertTrue(world.particles)
+        self.assertFalse(world.falling)
+        self.assertEqual(set(world.cells), {(cell.x, cell.y) for cell in bridge})
+        world.player.x, world.player.y = 10, 2
+        advance(world, 1)
+        self.assertTrue(world.player.grounded)
+        self.assertEqual(world.player.y, 7)
+        self.assertEqual(world.destroyed, 1)
+        self.assert_conserved(world)
+
+    def test_gravity_choice_survives_reset_and_defaults_to_falling(self):
+        cells = [Cell(10, 5, '='), Cell(10, 6, '|')]
+        self.assertTrue(World(cells, 50, 25).falling_enabled)
+        for enabled in (False, True):
+            world = World(cells, 50, 25, falling_enabled=enabled, duration=30)
+            world.destroy(10, 6, 0.4, 0.4)
+            self.assertEqual(bool(world.falling), enabled)
+            world.reset()
+            self.assertEqual(world.falling_enabled, enabled)
+            self.assertEqual(world.duration, 30)
+            self.assertEqual(world.destroyed, 0)
+            self.assertFalse(world.falling)
+            world.destroy(10, 6, 0.4, 0.4)
+            self.assertEqual(bool(world.falling), enabled)
+            self.assert_conserved(world)
+
+    def test_row_index_revisions_track_wide_cells_enemies_and_detachment(self):
+        cells = [Cell(10, 5, '界', width=2), Cell(10, 6, '|'), Cell(20, 9, '#')]
+        cells += [Cell(i, 2, char) for i, char in enumerate('ERROR')]
+        world = World(cells, 50, 25)
+        self.assertFalse(world.cells_by_row[2])
+        before = world.terrain_row_revisions[:]
+        world.destroy(10, 6, 0.4, 0.4)
+        self.assertGreater(world.terrain_row_revisions[5], before[5])
+        self.assertGreater(world.terrain_row_revisions[6], before[6])
+        self.assertEqual(world.terrain_row_revisions[9], before[9])
+        self.assertFalse(world.cells_by_row[5])
+        self.assertFalse(world.cells_by_row[6])
+        self.assert_conserved(world)
+        world.reset()
+        self.assert_conserved(world)
 
     def test_undamaged_floating_text_remains_static(self):
         world = World([Cell(x, 5, '#') for x in range(10, 30)], 60, 30)

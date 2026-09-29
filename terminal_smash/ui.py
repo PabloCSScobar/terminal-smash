@@ -9,6 +9,7 @@ import sys
 import time
 
 from .capture import Style, parse_capture
+from .demo import build_demo
 from .model import World
 from .records import arena_key, load_best, save_best
 
@@ -94,6 +95,7 @@ HELP_LINES = [
     'S / down          drop through a line',
     'T / Home          return to the top',
     'C                 switch FREE / 30s CHALLENGE',
+    'G                 falling ON/OFF (restarts)',
     'R                 restart the current mode',
     '?                 close help (game is paused)',
     'Esc / Q           return to terminal',
@@ -126,15 +128,43 @@ def _help(win, palette: Palette, page: int = 0) -> None:
     _put(win, top + height - 1, left + 2, footer[:width - 4], attr)
 
 
+def _text_runs(cells):
+    """Batch contiguous cells with the same style into one terminal write."""
+    runs = []
+    text = []
+    row = x = end = 0
+    style = None
+    for cell in sorted(cells, key=lambda c: (c.y, c.x)):
+        if text and (cell.y != row or cell.x != end or cell.style != style):
+            runs.append((row, x, ''.join(text), end - x, style))
+            text = []
+        if not text:
+            row, x, end, style = cell.y, cell.x, cell.x, cell.style
+        text.append(cell.char)
+        end += cell.width
+    if text:
+        runs.append((row, x, ''.join(text), end - x, style))
+    return runs
+
+
+def _write_run(win, y, x, text, attr):
+    # Callers have checked display width; preserve combining marks at the edge.
+    try:
+        win.addstr(y, x, text, attr)
+    except curses.error:
+        pass
+
+
 class TerrainLayer:
-    """Keep stationary text in a curses window; copy it in native code."""
+    """Redraw only damaged rows, batching text instead of writing glyph by glyph."""
 
     def __init__(self):
         self.window = None
         self.dimensions = None
         self.world = None
         self.cells = None
-        self.revision = -1
+        self.row_revisions = []
+        self.flying = {}
 
     def blit(self, win, world: World, palette: Palette) -> None:
         dimensions = win.getmaxyx()
@@ -142,24 +172,46 @@ class TerrainLayer:
             self.window = curses.newwin(*dimensions)
             self.dimensions = dimensions
             self.world = None
-        if self.world is not world or self.cells is not world.cells or self.revision != world.terrain_revision:
+        fresh = self.world is not world or self.cells is not world.cells
+        if fresh:
             self.window.erase()
-            rows, cols = dimensions
-            for cell in world.cells.values():
-                y = cell.y + 2
-                if 0 <= cell.x and cell.x + cell.width <= cols and 2 <= y < rows - 2:
-                    _put(self.window, y, cell.x, cell.char, palette.attr(cell.style))
-            self.world = world
-            self.cells = world.cells
-            self.revision = world.terrain_revision
+            self.row_revisions = [-1] * world.height
+            self.flying.clear()
+        rows, cols = dimensions
+        blank = ' ' * cols
+        for row, revision in enumerate(world.terrain_row_revisions):
+            if self.row_revisions[row] == revision:
+                continue
+            y = row + 2
+            if 2 <= y < rows - 3:
+                if not fresh:
+                    _write_run(self.window, y, 0, blank, 0)
+                for _, x, text, width, style in _text_runs(world.cells_by_row[row].values()):
+                    if 0 <= x and x + width <= cols:
+                        _write_run(self.window, y, x, text, palette.attr(style))
+            self.row_revisions[row] = revision
+        self.world = world
+        self.cells = world.cells
         self.window.overwrite(win)
+        active = {id(chunk) for chunk in world.falling}
+        if len(self.flying) > len(active):
+            self.flying = {key: value for key, value in self.flying.items() if key in active}
+
+    def falling_runs(self, chunk):
+        key = id(chunk)
+        entry = self.flying.get(key)
+        if entry is None or entry[0] is not chunk.cells:
+            entry = (chunk.cells, _text_runs(chunk.cells))
+            self.flying[key] = entry
+        return entry[1]
 
 
 class RoundRecord:
     """Save only completed challenges, once; storage failure must not end play."""
 
     def __init__(self, world: World):
-        self.key = arena_key(list(world.original), world.width, world.height)
+        self.key = arena_key(list(world.original), world.width, world.height,
+                             falling_enabled=world.falling_enabled)
         self.best = 0
         self.saved = False
         self.new_record = False
@@ -249,13 +301,13 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
 
     def scene(y: int, x: int, glyph: str, attr: int, width: int = 1) -> None:
         if 0 <= x and x + width <= cols and 2 <= y < rows - 3:
-            _put(win, y, x, glyph, attr)
+            _write_run(win, y, x, glyph, attr)
 
     for trail in world.trails:
         scene(round(trail.y) + 1, round(trail.x), '~', palette.attr(Style(fg=31 if trail.life < 0.1 else 45)))
     for chunk in world.falling:
-        for cell in chunk.cells:
-            scene(round(cell.y + chunk.offset_y) + 2, cell.x, cell.char, palette.attr(cell.style), cell.width)
+        for row, x, text, width, style in terrain.falling_runs(chunk):
+            scene(round(row + chunk.offset_y) + 2, x, text, palette.attr(style), width)
     for particle in world.particles:
         scene(round(particle.y) + 2, round(particle.x), particle.char, palette.attr(particle.style), particle.width)
     for wave in world.waves:
@@ -309,7 +361,10 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
     _put(win, rows - 2, 0, hint, cyan)
     blast = 'recharging' if world.time < world.next_blast else 'ready'
     dash = 'recharging' if world.time < world.next_dash else 'ready'
-    note = f' K blast {blast} | L dash {dash} | T top  R reset'
+    gravity = 'ON' if world.falling_enabled else 'OFF'
+    note = f' G falling {gravity} | K blast {blast} | T top R reset'
+    if cols >= len(note) + len(dash) + 10:
+        note += f' | L {dash}'
     if record and record.error:
         note = ' Local record unavailable | gameplay still works | R retry'
     _put(win, rows - 1, 0, note, dim)
@@ -319,14 +374,19 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
     curses.doupdate()
 
 
-def _new_world(text: str, rows: int, cols: int, challenge: bool) -> World:
+def _new_world(text: str, rows: int, cols: int, challenge: bool,
+               falling_enabled: bool = True, *, demo: bool = False) -> World:
+    if demo:
+        text = build_demo(cols, rows - 5)
     content_rows = text.rstrip('\r\n').count('\n') + 1
     start_row = max(0, content_rows - (rows - 5))
     cells = parse_capture(text, cols, rows - 5, start_row=start_row)
-    return World(cells, cols, rows - 4, duration=ROUND_DURATION if challenge else None)
+    return World(cells, cols, rows - 4, duration=ROUND_DURATION if challenge else None,
+                 falling_enabled=falling_enabled)
 
 
-def _main(win, text: str, label: str, challenge: bool = False) -> None:
+def _main(win, text: str, label: str, challenge: bool = False,
+          falling_enabled: bool = True, demo: bool = False) -> None:
     try:
         curses.curs_set(0)
     except curses.error:
@@ -350,7 +410,7 @@ def _main(win, text: str, label: str, challenge: bool = False) -> None:
         rebuilt = False
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
-            world = _new_world(text, rows, cols, challenge)
+            world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
             record = RoundRecord(world)
             rebuilt = True
         # Advance the old state before accepting new actions, so a key arriving
@@ -381,7 +441,12 @@ def _main(win, text: str, label: str, challenge: bool = False) -> None:
                 continue
             if key in (ord('c'), ord('C')):
                 challenge = not challenge
-                world = _new_world(text, rows, cols, challenge)
+                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
+                record = RoundRecord(world)
+                rebuilt = True
+            elif key in (ord('g'), ord('G')):
+                falling_enabled = not falling_enabled
+                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
@@ -422,9 +487,11 @@ def _main(win, text: str, label: str, challenge: bool = False) -> None:
         select.select([sys.stdin], [], [], wait)
 
 
-def run(text: str, label: str = 'terminal', *, challenge: bool = False) -> None:
+def run(text: str, label: str = 'terminal', *, challenge: bool = False,
+        falling_enabled: bool = True, demo: bool = False) -> None:
+
     locale.setlocale(locale.LC_ALL, '')
     try:
-        curses.wrapper(_main, text, label, challenge)
+        curses.wrapper(_main, text, label, challenge, falling_enabled, demo)
     except KeyboardInterrupt:
         pass
