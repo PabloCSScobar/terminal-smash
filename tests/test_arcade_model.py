@@ -249,6 +249,88 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertEqual(len(world.cells), 20)
         self.assert_conserved(world)
 
+    def test_challenge_adds_targets_without_changing_captured_terrain(self):
+        cells = parse_capture('shell prompt\n$ echo ready\nready', 80, 25)
+        for falling_enabled in (False, True):
+            world = World(cells, 80, 25, duration=30, falling_enabled=falling_enabled)
+            self.assertEqual(world.generated_enemies, 3)
+            self.assertEqual(len(world.enemies), 3)
+            self.assertEqual(world.total, len(cells) + 15)
+            self.assertEqual(world.destroyed, 0)
+            self.assertEqual(world.original, tuple(cells))
+            self.assertEqual(world.cells, {(cell.x, cell.y): cell for cell in cells})
+            for enemy in world.enemies:
+                self.assertEqual(''.join(cell.char for cell in enemy.cells), 'ERROR')
+                self.assertEqual(enemy.hp, 2)
+                self.assertTrue(all(cell.style == Style(fg=196, bold=True)
+                                    for cell in enemy.cells))
+            self.assert_conserved(world)
+
+    def test_challenge_preserves_natural_error_count_and_free_play(self):
+        for duration in (None, 30):
+            cells = parse_capture('one ERROR here', 80, 25)
+            world = World(cells, 80, 25, duration=duration)
+            self.assertEqual(world.generated_enemies, 0)
+            self.assertEqual(len(world.enemies), 1)
+            self.assertEqual(world.total, len(cells))
+            self.assert_conserved(world)
+        for cells in ([], parse_capture('no failures', 80, 25)):
+            world = World(cells, 80, 25)
+            self.assertEqual(world.generated_enemies, 0)
+            self.assertFalse(world.enemies)
+            self.assertEqual(world.total, len(cells))
+            self.assert_conserved(world)
+
+    def test_generated_errors_are_in_bounds_and_clear_of_starting_player(self):
+        for width, height in ((1, 1), (8, 6), (9, 7), (44, 9), (80, 25), (300, 100)):
+            with self.subTest(width=width, height=height):
+                world = World([], width, height, duration=30)
+                self.assertEqual(len(world.enemies), 3)
+                self.assertEqual(len({(e.x, e.y) for e in world.enemies}), 3)
+                for enemy in world.enemies:
+                    self.assertGreaterEqual(enemy.x - 2, 0)
+                    self.assertLessEqual(enemy.x + 2, world.width - 1)
+                    self.assertGreaterEqual(enemy.y - 1, 0)
+                    self.assertLessEqual(enemy.y, world.height - 2)
+                    self.assertFalse(abs(enemy.x - world.player.x) < 3.2
+                                     and abs(enemy.y - world.player.y) < 1.7)
+                world.update(1 / 90)
+                self.assertEqual(world.hurt_until, 0)
+                self.assert_conserved(world)
+
+    def test_generated_errors_can_be_killed_and_reset_reproduces_them(self):
+        world = World([], 80, 25, seed=1, duration=30)
+        before = [(e.x, e.y, e.hp, list(e.cells)) for e in world.enemies]
+        enemy = world.enemies[0]
+        self.assertEqual(world.destroy(enemy.x, enemy.y - 1, 2.1, 0.5), 0)
+        self.assertEqual(enemy.hp, 1)
+        advance(world, 0.12)
+        self.assertEqual(world.destroy(enemy.x, enemy.y - 1, 2.1, 0.5), 5)
+        self.assertEqual(len(world.enemies), 2)
+        self.assertEqual(world.destroyed, 5)
+        self.assertFalse(world.cleared)
+        self.assertGreater(world.score, 50)
+        self.assertTrue(any(p.char == 'E' and p.style.fg == 196 for p in world.particles))
+        self.assert_conserved(world)
+        world.destroy(40, 12, 80, 25, enemy_damage=2)
+        self.assertEqual(world.destroyed, 15)
+        self.assertEqual(world.generated_enemies, 3)
+        self.assertTrue(world.cleared)
+        self.assertTrue(world.finished)
+        self.assertEqual(world.finish_reason, 'cleared')
+        world.update(1)
+        self.assertFalse(world.enemies)
+        self.assert_conserved(world)
+        world.reset()
+        self.assertEqual([(e.x, e.y, e.hp, list(e.cells)) for e in world.enemies], before)
+        self.assertEqual(world.generated_enemies, 3)
+        self.assertEqual(world.total, 15)
+        self.assertEqual(world.destroyed, 0)
+        self.assertEqual(world.score, 0)
+        self.assertEqual(world.original, ())
+        self.assertFalse(world.finished)
+        self.assert_conserved(world)
+
     def test_challenge_counts_full_stall_time_and_freezes_actions_at_expiry(self):
         world = World([Cell(30, 4, '#')], 100, 30, duration=30)
         world.update(29.5)
@@ -283,9 +365,16 @@ class ArcadePhysicsTests(unittest.TestCase):
             self.assertFalse(world.cleared)
             self.assertFalse(world.finished)
             advance(world, 2)
+            self.assertEqual(world.destroyed, 2)
+            if duration is not None:
+                self.assertFalse(world.cleared)
+                self.assertFalse(world.finished)
+                world.destroy(world.width / 2, world.height / 2,
+                              world.width, world.height, enemy_damage=2)
             self.assertTrue(world.cleared)
             self.assertEqual(world.finished, duration is not None)
-            self.assertEqual(world.destroyed, 2)
+            self.assertEqual(world.destroyed, world.total)
+            self.assert_conserved(world)
             if duration is not None:
                 self.assertEqual(world.finish_reason, 'cleared')
         world = World(parse_capture('ERROR', 50, 25), 50, 25, duration=30)

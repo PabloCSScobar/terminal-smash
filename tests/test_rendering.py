@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from terminal_smash.capture import Cell
 from terminal_smash.model import World
+from terminal_smash.records import arena_key
 from terminal_smash.ui import RoundRecord, TerrainLayer, _actor_pose, _text_runs
 
 
@@ -130,6 +131,21 @@ class RoundRecordTests(unittest.TestCase):
             self.assertEqual(save.call_count, 1)
             self.assertEqual(record.best, 120)
             self.assertTrue(record.new_record)
+
+    def test_generated_enemy_round_uses_its_own_record_and_reset_keeps_key(self):
+        world = self.world()
+        with patch('terminal_smash.ui.load_best', return_value=0):
+            key = RoundRecord(world).key
+            old_key = arena_key(list(world.original), world.width, world.height)
+            self.assertNotEqual(key, old_key)
+            self.assertEqual(key, arena_key(list(world.original), world.width, world.height,
+                                           generated_enemies=3))
+            world.destroy(world.width / 2, world.height / 2, world.width, world.height,
+                          enemy_damage=2)
+            self.assertTrue(world.finished)
+            self.assertEqual(RoundRecord(world).key, key)
+            world.reset()
+            self.assertEqual(RoundRecord(world).key, key)
 
     def test_free_play_never_reads_or_saves_records(self):
         with patch('terminal_smash.ui.load_best') as load, patch('terminal_smash.ui.save_best') as save:

@@ -73,9 +73,13 @@ python3 -m terminal_smash --demo # uruchomienie z katalogu źródeł
 
 ## Demolka na czas i rekordy
 
+Challenge działa również na tekście własnej sesji tmux: otwórz grę skrótem **Ctrl+b, potem Shift+s** i naciśnij **C**, albo wpisz w panelu `terminal-smash --challenge`. `--session` służy tylko do otwarcia sesji tmux; rundę włączasz już w jej środku.
+
+Jeśli migawka nie zawiera przeciwników ze słów `ERROR`, challenge dodaje **trzech przeciwników** na początku rundy, także na pustej planszy. Można ich pokonać zwykłymi atakami; muszą zniknąć wraz z tekstem, aby wyczyścić planszę przed końcem czasu. **R** odtwarza rundę z przeciwnikami. Swobodna demolka nadal ożywia tylko słowa `ERROR` obecne w tekście.
+
 Runda trwa do 30 sekund aktywnej gry; pełne wyczyszczenie planszy kończy ją wcześniej. Buduj combo kolejnymi trafieniami i zawaleniami, aby zwiększać mnożnik punktów. Po końcu rundy wynik zostaje na ekranie; **R** rozpoczyna kolejną próbę, a **C** wraca do swobodnej demolki. Pomoc pod **?** zatrzymuje czas. Zmiana rozmiaru terminala rozpoczyna nową rundę i odtwarza tekst.
 
-Rekord jest osobny dla tej samej planszy, rozmiaru terminala i ustawienia spadania tekstu. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
+Rekord jest osobny dla tej samej planszy, rozmiaru terminala i ustawienia spadania tekstu. Rundy z dodanymi przeciwnikami mają osobne rekordy względem starszej wersji bez nich. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
 
 ## Instalacja i usunięcie
 

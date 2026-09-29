@@ -128,6 +128,7 @@ class World:
         self.falling: list[FallingChunk] = []
         self.trails: list[Trail] = []
         self.enemies: list[Enemy] = []
+        self.generated_enemies = 0
         self.direction = 0
         self.move_until = self.drop_until = self.attack_until = 0.0
         self.next_punch = self.next_blast = self.next_dash = self.next_slam = 0.0
@@ -138,6 +139,8 @@ class World:
         self._next_trail = 0.0
         self._pending_falling = 0
         self._spawn_enemies()
+        if self.duration is not None and not self.enemies:
+            self._spawn_challenge_enemies()
         self.terrain_revision += 1
         if self.duration == 0:
             self._finish("time")
@@ -163,6 +166,23 @@ class World:
                 continue
             source = [self._remove((c.x, c.y)) for c in letters]
             self.enemies.append(Enemy(float(x + 2), float(y + 1), cells=source))
+
+    def _spawn_challenge_enemies(self) -> None:
+        """Give captured challenges targets even when their text has no ERROR.
+
+        These actors own new letters, so spawning never removes snapshot text.
+        Keep their feet at least two rows below the starting player, including
+        the smallest arena; the positions are deterministic across resets.
+        """
+        style = Style(fg=196, bold=True)
+        for index in range(3):
+            x = 2 + round((self.width - 5) * index / 2)
+            y = max(4, round((self.height - 2) * (index + 1) / 4))
+            letters = [Cell(x - 2 + offset, y - 1, char, style)
+                       for offset, char in enumerate("ERROR")]
+            self.enemies.append(Enemy(float(x), float(y), cells=letters))
+            self.total += len(letters)
+            self.generated_enemies += 1
 
     def _remove(self, key: tuple[int, int]) -> Cell:
         cell = self.cells.pop(key)

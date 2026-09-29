@@ -103,6 +103,7 @@ HELP_LINES = [
     'Chain hits for x2..x5 score and stronger hits.',
     'Break supports: falling text starts a cascade.',
     'ERROR bugs chase you. Hit them before they hit you!',
+    'CHALLENGE spawns ERRORs even in plain text.',
     '',
     'Only a copy of the screen is destroyed.',
     'The underlying session keeps running.',
@@ -211,7 +212,8 @@ class RoundRecord:
 
     def __init__(self, world: World):
         self.key = arena_key(list(world.original), world.width, world.height,
-                             falling_enabled=world.falling_enabled)
+                             falling_enabled=world.falling_enabled,
+                             generated_enemies=world.generated_enemies)
         self.best = 0
         self.saved = False
         self.new_record = False

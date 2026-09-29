@@ -342,16 +342,17 @@ class TerminalIntegrationTests(unittest.TestCase):
             terminal.close()
 
     def test_completed_challenge_record_survives_immediate_exit(self):
-        # One glyph sits directly in the initial punch radius. Both keys arrive
-        # in one read batch, so saving only once per rendered frame is too late.
+        # One natural enemy sits directly in the initial blast radius. Both keys
+        # arrive in one read batch, so saving once per rendered frame is too late.
+        # Using ERROR avoids supplemental enemies in an otherwise empty round.
         child = (
             "from terminal_smash import ui; "
-            "ui.run('\\n' + ' ' * 36 + 'X', label='single', challenge=True)"
+            "ui.run('\\n' + ' ' * 32 + 'ERROR', label='single-error', challenge=True)"
         )
         terminal = Terminal([sys.executable, "-c", child])
         try:
             terminal.until(b"TERMINAL SMASH")
-            terminal.send(b"j\x1b")
+            terminal.send(b"k\x1b")
             self.assertEqual(terminal.finish(), 0)
             record_file = Path(terminal.state_directory.name) / "terminal-smash" / "records.json"
             self.assertTrue(record_file.is_file(), "Exit must preserve the just-completed round")
@@ -429,6 +430,42 @@ class TerminalIntegrationTests(unittest.TestCase):
                 )
                 terminal.until(b"TERMINAL SMASH", after=offset)
                 self.assertIsNone(popup.poll())
+                self.assertNotIn("ERROR", before)
+                self.assertNotIn(b"[ERROR]", terminal.output[offset:])
+
+                # Challenge must populate a real session snapshot even when no
+                # literal ERROR word was captured. The copied source pane and
+                # its running process must remain unchanged throughout.
+                offset = len(terminal.output)
+                terminal.send(b"C")
+                terminal.until(b"CHALLENGE", after=offset)
+                terminal.until(b"[ERROR]", after=offset)
+                offset = len(terminal.output)
+                tmux("refresh-client", "-t", client)
+                terminal.until(b"ERROR 3", after=offset)
+                self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
+
+                offset = len(terminal.output)
+                terminal.send(b"k?")
+                terminal.until(b"HELP", after=offset)
+                terminal.until(b"charging", after=offset)
+                terminal.send(b"?R")
+                terminal.pump(0.1)
+                offset = len(terminal.output)
+                tmux("refresh-client", "-t", client)
+                terminal.until(b"CHALLENGE", after=offset)
+                terminal.until(b"ERROR 3", after=offset)
+                terminal.until(b"K blast ready", after=offset)
+                self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
+
+                # Returning to free play restores the snapshot without the
+                # challenge's supplemental enemies.
+                offset = len(terminal.output)
+                terminal.send(b"C")
+                terminal.until(b"FREE PLAY", after=offset)
+                offset = len(terminal.output)
+                tmux("refresh-client", "-t", client)
+                terminal.until(b"ERROR 0", after=offset)
                 offset = len(terminal.output)
                 terminal.send(b"ddLwXJK")
                 terminal.until(b"charging", after=offset)

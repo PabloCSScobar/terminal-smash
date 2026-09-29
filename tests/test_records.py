@@ -48,6 +48,16 @@ class RecordsTests(unittest.TestCase):
         self.assertEqual(records.load_best(self.key), 100)
         self.assertEqual(records.load_best(other), 20)
 
+    def test_generated_enemies_keep_old_enemy_free_records_separate(self):
+        other = records.arena_key(self.cells, 80, 24, generated_enemies=3)
+        self.assertNotEqual(other, self.key)
+        self.assertEqual(self.key, records.arena_key(self.cells, 80, 24, generated_enemies=0))
+        records.save_best(self.key, 100)
+        self.assertEqual(records.load_best(other), 0)
+        records.save_best(other, 30)
+        self.assertEqual(records.load_best(self.key), 100)
+        self.assertEqual(records.load_best(other), 30)
+
     def test_missing_file_reads_zero_without_creating_anything(self):
         self.assertEqual(records.load_best(self.key), 0)
         self.assertFalse(self.path.parent.exists())
