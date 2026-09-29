@@ -86,19 +86,40 @@ class CliTests(unittest.TestCase):
     def test_challenge_popup_keeps_flag_with_private_snapshot(self):
         self._check_popup(fail=False, challenge=True)
 
-    def test_gravity_off_reaches_demo_ui_and_popup(self):
+    def test_gravity_on_reaches_demo_ui_and_popup(self):
         with patch.object(cli, "_render", return_value=0) as render:
-            self.assertEqual(cli.main(["--demo", "--gravity", "off"]), 0)
-        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, falling_enabled=False)
+            self.assertEqual(cli.main(["--demo", "--gravity", "on"]), 0)
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, falling_enabled=True)
         with patch.object(cli, "_launch_popup", return_value=0) as launch:
-            self.assertEqual(cli.main(["--gravity", "off", "--challenge"]), 0)
-        launch.assert_called_once_with(None, None, "terminal", challenge=True, falling_enabled=False)
-        self._check_popup(fail=False, challenge=True, falling_enabled=False)
+            self.assertEqual(cli.main(["--gravity", "on", "--challenge"]), 0)
+        launch.assert_called_once_with(None, None, "terminal", challenge=True, falling_enabled=True)
+        self._check_popup(fail=False, challenge=True, falling_enabled=True)
+
+    def test_gravity_off_is_default_for_all_entry_points(self):
+        for arguments in (["--demo"], ["--demo", "--gravity", "off"]):
+            with self.subTest(arguments=arguments), patch.object(cli, "_render", return_value=0) as render:
+                self.assertEqual(cli.main(arguments), 0)
+                render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True)
+        for arguments in ([], ["--gravity", "off"]):
+            with self.subTest(arguments=arguments), patch.object(cli, "_launch_popup", return_value=0) as launch:
+                self.assertEqual(cli.main(arguments), 0)
+                launch.assert_called_once_with(None, None, "terminal")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "scene.txt"
+            source.write_text("arena")
+            for source_flag in ("--file", "--snapshot"):
+                for gravity in ([], ["--gravity", "off"], ["--gravity", "on"]):
+                    with self.subTest(source=source_flag, gravity=gravity), patch.object(cli, "_render", return_value=0) as render:
+                        self.assertEqual(cli.main([source_flag, str(source), *gravity]), 0)
+                        options = {"falling_enabled": True} if gravity == ["--gravity", "on"] else {}
+                        render.assert_called_once_with("arena", "scene.txt", **options)
 
     def test_render_forwards_responsive_demo_and_gravity_setting(self):
-        with patch.object(cli.sys.stdin, "isatty", return_value=True), patch.object(cli.sys.stdout, "isatty", return_value=True), patch("terminal_smash.ui.run") as run:
-            self.assertEqual(cli._render("arena", "demo", demo=True, falling_enabled=False), 0)
-        run.assert_called_once_with("arena", label="demo", demo=True, falling_enabled=False)
+        for falling_enabled in (False, True):
+            with self.subTest(falling_enabled=falling_enabled), patch.object(cli.sys.stdin, "isatty", return_value=True), patch.object(cli.sys.stdout, "isatty", return_value=True), patch("terminal_smash.ui.run") as run:
+                self.assertEqual(cli._render("arena", "demo", demo=True, falling_enabled=falling_enabled), 0)
+                options = {"falling_enabled": True} if falling_enabled else {}
+                run.assert_called_once_with("arena", label="demo", demo=True, **options)
 
     def test_gravity_setting_rejects_non_game_commands(self):
         for argument in ("--doctor", "--session"):
@@ -113,7 +134,7 @@ class CliTests(unittest.TestCase):
     def test_snapshot_is_removed_after_popup_error(self):
         self._check_popup(fail=True)
 
-    def _check_popup(self, fail, challenge=False, falling_enabled=True):
+    def _check_popup(self, fail, challenge=False, falling_enabled=False):
         real_temporary_directory = tempfile.TemporaryDirectory
         with real_temporary_directory(prefix="smash tests '$ ") as directory:
             root = Path(directory)
@@ -134,7 +155,7 @@ class CliTests(unittest.TestCase):
                 shell = shlex.split(arguments[-1])
                 self.assertEqual(shell[0], str(root / "terminal-smash"))
                 self.assertEqual(shell[1], "--snapshot")
-                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []) + ([] if falling_enabled else ["--gravity", "off"]))
+                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []) + (["--gravity", "on"] if falling_enabled else []))
                 snapshot = Path(shell[2])
                 snapshot_paths.append(snapshot)
                 self.assertEqual(snapshot.read_text(), source)

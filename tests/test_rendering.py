@@ -92,12 +92,28 @@ class RenderingTests(unittest.TestCase):
         self.assertLessEqual(len(self.layer.window.writes), 3)
 
     def test_falling_run_cache_refreshes_when_letters_are_hit(self):
-        self.world = World([Cell(5, 5, 'A'), Cell(6, 5, 'B'), Cell(5, 6, '|')], 80, 20)
+        self.world = World([Cell(5, 5, 'A'), Cell(6, 5, 'B'), Cell(5, 6, '|')], 80, 20, falling_enabled=True)
         self.world.destroy(5, 6, 0.4, 0.4)
         chunk = self.world.falling[0]
         self.assertEqual(self.layer.falling_runs(chunk)[0][2], 'AB')
         self.world.destroy(5, 5, 0.4, 0.4)
         self.assertEqual(self.layer.falling_runs(chunk)[0][2], 'B')
+
+    def test_settled_text_reappears_in_cached_terrain_without_erasing_support(self):
+        self.world = World([Cell(5, 5, 'A'), Cell(6, 5, 'B'), Cell(5, 6, '|'),
+                            Cell(5, 10, '#'), Cell(6, 10, '#')], 80, 20,
+                           falling_enabled=True)
+        self.draw()
+        self.world.destroy(5, 6, 0.4, 0.4)
+        self.draw()
+        self.assertEqual(self.screen.grid[7][5:7], [' ', ' '])
+        for _ in range(90):
+            self.world.update(1 / 90)
+        self.assertFalse(self.world.falling)
+        self.draw()
+        self.assertEqual(self.screen.grid[11][5:7], ['A', 'B'])
+        self.assertEqual(self.screen.grid[12][5:7], ['#', '#'])
+        self.assertEqual(self.world.destroyed, 1)
 
     def test_grouped_runs_keep_wide_and_combining_characters_atomic(self):
         cells = [Cell(0, 0, '界', width=2), Cell(2, 0, 'e\u0301'), Cell(4, 0, 'X')]

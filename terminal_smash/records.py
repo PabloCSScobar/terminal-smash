@@ -19,10 +19,10 @@ MAX_SCORE = 10**12
 _KEY = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def arena_key(cells: list[Cell], width: int, height: int, *, falling_enabled: bool = True) -> str:
+def arena_key(cells: list[Cell], width: int, height: int, *, falling_enabled: bool = False) -> str:
     """Fingerprint the scene and size so different arenas have separate records."""
     digest = hashlib.sha256()
-    digest.update(f"terminal-smash:arcade-v2:30:{width}:{height}\n".encode("ascii"))
+    digest.update(f"terminal-smash:arcade-v3:30:{width}:{height}\n".encode("ascii"))
     if not falling_enabled:
         digest.update(b"gravity:off\n")
     for cell in sorted(cells, key=lambda value: (value.y, value.x)):

@@ -39,9 +39,9 @@ class RecordsTests(unittest.TestCase):
         self.assertNotEqual(self.key, records.arena_key([Cell(1, 2, "A", Style(bold=True)), *self.cells[1:]], 80, 24))
 
     def test_gravity_modes_keep_separate_records(self):
-        other = records.arena_key(self.cells, 80, 24, falling_enabled=False)
+        other = records.arena_key(self.cells, 80, 24, falling_enabled=True)
         self.assertNotEqual(other, self.key)
-        self.assertEqual(self.key, records.arena_key(self.cells, 80, 24, falling_enabled=True))
+        self.assertEqual(self.key, records.arena_key(self.cells, 80, 24, falling_enabled=False))
         records.save_best(self.key, 100)
         self.assertEqual(records.load_best(other), 0)
         records.save_best(other, 20)

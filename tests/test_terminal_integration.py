@@ -200,42 +200,42 @@ class TerminalIntegrationTests(unittest.TestCase):
         )
         terminal = Terminal([sys.executable, "-c", child])
         try:
-            terminal.until(b"falling ON")
+            terminal.until(b"falling OFF")
             terminal.until(b"Grip AUTO")
             offset = len(terminal.output)
             terminal.send(b"G")
-            terminal.until(b"falling OFF", after=offset)
+            terminal.until(b"falling ON", after=offset)
             terminal.until(b"Grip AUTO", after=offset)
 
             # Charging the blast makes the reset observable, even though the
             # gravity status itself is expected to remain unchanged.
             offset = len(terminal.output)
             terminal.send(b"k")
-            terminal.until(b"falling OFF | Grip AUTO | K blast recharging", after=offset)
+            terminal.until(b"falling ON | Grip AUTO | K blast recharging", after=offset)
             offset = len(terminal.output)
             terminal.send(b"R")
-            terminal.until(b"falling OFF | Grip AUTO | K blast ready", after=offset)
+            terminal.until(b"falling ON | Grip AUTO | K blast ready", after=offset)
 
             for key, mode in ((b"C", b"CHALLENGE"), (b"c", b"FREE PLAY")):
                 offset = len(terminal.output)
                 terminal.send(key)
                 terminal.until(mode, after=offset)
                 mode_offset = terminal.output.index(mode, offset)
-                terminal.until(b"falling OFF", after=mode_offset)
+                terminal.until(b"falling ON", after=mode_offset)
                 terminal.until(b"Grip AUTO", after=mode_offset)
 
             # Passing through an unplayable size removes the old footer, so
-            # the next OFF label must come from the rebuilt larger world.
+            # the next ON label must come from the rebuilt larger world.
             offset = len(terminal.output)
             terminal.resize(10, 50)
             terminal.until(b"Resize to at least", after=offset)
             offset = len(terminal.output)
             terminal.resize(32, 120)
-            terminal.until(b"falling OFF", after=offset)
+            terminal.until(b"falling ON", after=offset)
             terminal.until(b"Grip AUTO", after=offset)
             offset = len(terminal.output)
             terminal.send(b"g")
-            terminal.until(b"falling ON", after=offset)
+            terminal.until(b"falling OFF", after=offset)
             terminal.until(b"Grip AUTO", after=offset)
 
             terminal.send(b"\x1b")
@@ -249,12 +249,12 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
-    def test_cli_can_start_demo_with_gravity_disabled(self):
-        terminal = Terminal([sys.executable, str(LAUNCHER), "--demo", "--gravity", "off"])
+    def test_cli_can_explicitly_start_demo_with_gravity_enabled(self):
+        terminal = Terminal([sys.executable, str(LAUNCHER), "--demo", "--gravity", "on"])
         try:
-            terminal.until(b"falling OFF")
+            terminal.until(b"falling ON")
             self.assertIsNone(terminal.process.poll())
-            self.assertNotIn(b"falling ON", bytes(terminal.output))
+            self.assertNotIn(b"falling OFF", bytes(terminal.output))
             terminal.send(b"\x1b")
             self.assertEqual(terminal.finish(), 0)
             self.assertNotIn(b"Traceback", bytes(terminal.output))
@@ -589,7 +589,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 popup_env = dict(env, TMUX=server_env, TMUX_PANE=pane)
                 offset = len(terminal.output)
                 popup = subprocess.Popen(
-                    [sys.executable, str(LAUNCHER), "--pane", pane, "--client", client],
+                    [sys.executable, str(LAUNCHER), "--pane", pane, "--client", client, "--gravity", "on"],
                     cwd=ROOT,
                     env=popup_env,
                     stdin=subprocess.DEVNULL,
@@ -599,6 +599,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                     start_new_session=True,
                 )
                 terminal.until(b"TERMINAL SMASH", after=offset)
+                terminal.until(b"falling ON", after=offset)
                 self.assertIsNone(popup.poll())
                 self.assertNotIn("ERROR", before)
                 self.assertNotIn(b"[ERROR]", terminal.output[offset:])
@@ -671,6 +672,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 offset = len(terminal.output)
                 terminal.send(b"\x02S")  # Default tmux prefix Ctrl+b, then Shift+s.
                 terminal.until(b"TERMINAL SMASH", after=offset)
+                terminal.until(b"falling OFF", after=offset)
                 offset = len(terminal.output)
                 # Freeze the cooldown in help so tmux output coalescing cannot
                 # hide its short-lived status on a busy host.

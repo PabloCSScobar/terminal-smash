@@ -51,6 +51,7 @@ class FallingChunk:
     left: int = field(init=False)
     right: int = field(init=False)
     centre_x: float = field(init=False)
+    columns: frozenset[int] = field(init=False)
 
     def __post_init__(self) -> None:
         # Chunks are horizontal runs. Cache their bounds once, rather than
@@ -64,6 +65,8 @@ class FallingChunk:
             self.right = max(cell.x + cell.width for cell in self.cells)
             self.centre_x = sum(cell.x + (cell.width - 1) / 2
                                 for cell in self.cells) / len(self.cells)
+            self.columns = frozenset(cell.x + dx for cell in self.cells
+                                     for dx in range(cell.width))
 
 
 @dataclass
@@ -90,7 +93,7 @@ class World(TraversalMixin):
 
     def __init__(self, cells: list[Cell], width: int, height: int,
                  seed: int | None = None, *, duration: float | None = None,
-                 falling_enabled: bool = True):
+                 falling_enabled: bool = False):
         self.width = max(8, width)
         self.height = max(6, height)
         self.original = tuple(cells)
@@ -305,9 +308,7 @@ class World(TraversalMixin):
         self.attack_started = self.time
         self.attack_until = self.time + 0.11
         p = self.player
-        strength = 1 + (self.multiplier - 1) * 0.07
-        return self.destroy(p.x + p.facing * 3.0, p.y - 0.8,
-                            4.5 * strength, 2.2 * strength)
+        return self.destroy(p.x + p.facing * 3.0, p.y - 0.8, 3.2, 1.5)
 
     def blast(self) -> int:
         if self.finished or self.time < self.next_blast:
@@ -318,9 +319,7 @@ class World(TraversalMixin):
         self.attack_until = self.time + 0.16
         p = self.player
         self._wave(p.x, p.y - 1.0)
-        strength = 1 + (self.multiplier - 1) * 0.07
-        return self.destroy(p.x, p.y - 1.0, 12.0 * strength, 5.5 * strength,
-                            enemy_damage=2)
+        return self.destroy(p.x, p.y - 1.0, 7.0, 3.0, enemy_damage=2)
 
     def dash(self) -> bool:
         if self.finished or self.slamming or self.time < self.next_dash:
@@ -364,6 +363,10 @@ class World(TraversalMixin):
 
     def _debris(self, cell: Cell, x: float, y: float, *, offset_y: float = 0.0,
                 position_x: float | None = None, position_y: float | None = None) -> None:
+        # Bound debris allocation before creating particles: a direct hit must not create
+        # thousands of particles just to discard them at the end of the attack.
+        if len(self.particles) >= 800:
+            return
         px = cell.x if position_x is None else position_x
         py = cell.y + offset_y if position_y is None else position_y
         self.particles.append(Particle(cell.char, cell.style, px, py,
@@ -373,11 +376,13 @@ class World(TraversalMixin):
 
     def _sparks(self, x: float, y: float, count: int) -> None:
         colour = (220, 214, 208, 201, 196)[self.multiplier - 1]
-        for _ in range(min(28, count * 2 + self.multiplier - 1)):
+        count = min(28, count * 2 + self.multiplier - 1)
+        if len(self.particles) + count > 800:
+            del self.particles[:len(self.particles) + count - 800]
+        for _ in range(count):
             self.particles.append(Particle(self.rng.choice(".*+"), Style(fg=colour, bold=True),
                                            x, y, self.rng.uniform(-22, 22),
                                            self.rng.uniform(-12, 4), self.rng.uniform(0.15, 0.45)))
-        self.particles = self.particles[-800:]
 
     def _ellipse_keys(self, x: float, y: float, rx: float, ry: float) -> set[tuple[int, int]]:
         """Use the occupancy index, so a dash does not scan the whole screen."""
@@ -550,7 +555,7 @@ class World(TraversalMixin):
             if dashing:
                 # A swept ellipse covers both endpoints, even on a slow frame.
                 self.destroy((old_x + p.x) / 2, p.y - 0.7,
-                             2.8 + abs(p.x - old_x) / 2, 1.7, enemy_damage=2)
+                             2.0 + abs(p.x - old_x) / 2, 1.1, enemy_damage=2)
                 if self.finished:
                     return
                 if self.time >= self._next_trail:
@@ -591,8 +596,7 @@ class World(TraversalMixin):
                 self.slamming = False
                 self._wave(p.x, impact_y)
                 self.attack_until = self.time + 0.2
-                strength = 1 + (self.multiplier - 1) * 0.07
-                self.destroy(p.x, impact_y, 15.0 * strength, 4.0 * strength, enemy_damage=3)
+                self.destroy(p.x, impact_y, 8.0, 2.5, enemy_damage=3)
                 if self.finished:
                     return
         self._step_falling(dt)
@@ -617,41 +621,64 @@ class World(TraversalMixin):
             trail.life -= dt
         self.trails = [trail for trail in self.trails if trail.life > 0]
 
+    def _settle_chunk(self, chunk: FallingChunk, row: int) -> bool:
+        """Restore landed text as solid terrain, without damage or an explosion."""
+        if any((column, row) in self.occupied for column in chunk.columns):
+            return False
+        for source in chunk.cells:
+            cell = Cell(source.x, row, source.char, source.style, source.width)
+            self.cells[(cell.x, row)] = cell
+            self.cells_by_row[row][cell.x] = cell
+            for dx in range(cell.width):
+                self.occupied[(cell.x + dx, row)] = (cell.x, row)
+        self.terrain_row_revisions[row] += 1
+        self.terrain_revision += 1
+        return True
+
     def _step_falling(self, dt: float) -> None:
-        current, self.falling = self.falling, []
+        # Resolve lower fragments first. Upper fragments can rest on them in
+        # flight, then become terrain once the lower fragment has landed.
+        current = sorted(self.falling, key=lambda item: item.row + item.offset_y, reverse=True)
+        self.falling = []
         self._pending_falling = len(current)
         for chunk in current:
             self._pending_falling -= 1
-            old_offset = chunk.offset_y
+            old_row = math.floor(chunk.row + chunk.offset_y)
             chunk.vy = min(42.0, chunk.vy + 38.0 * dt)
             chunk.offset_y += chunk.vy * dt
-            old_row = math.floor(chunk.row + old_offset)
             new_row = math.floor(chunk.row + chunk.offset_y)
-            floor_hit = new_row >= self.height - 2
-            if old_row == new_row and not floor_hit:
+            floor = self.height - 2
+            if old_row == new_row and new_row < floor:
                 self.falling.append(chunk)
                 continue
-            hit: set[tuple[int, int]] = set()
-            for row in range(max(0, old_row + 1), min(self.height - 2, new_row) + 1):
-                if not self.cells_by_row[row]:
-                    continue
-                for cell in chunk.cells:
-                    for dx in range(cell.width):
-                        key = self.occupied.get((cell.x + dx, row))
-                        if key is not None:
-                            hit.add(key)
-            if not hit and not floor_hit:
+            landing_row = floor if new_row >= floor else None
+            for row in range(max(0, old_row + 1), min(floor, new_row) + 1):
+                if self.cells_by_row[row] and any((column, row) in self.occupied
+                                                  for column in chunk.columns):
+                    landing_row = row - 1
+                    break
+            # Moving text also provides support: fast upper fragments must not
+            # pass through lower fragments and occupy the same terrain cells.
+            moving_support = None
+            for lower in self.falling:
+                row = math.floor(lower.row + lower.offset_y)
+                if (old_row < row <= new_row
+                        and (landing_row is None or row - 1 < landing_row)
+                        and not chunk.columns.isdisjoint(lower.columns)):
+                    landing_row = row - 1
+                    moving_support = lower
+            if landing_row is None:
                 self.falling.append(chunk)
                 continue
-            x = chunk.centre_x
-            y = min(self.height - 2, chunk.cells[0].y + chunk.offset_y)
-            count = self._destroy_static(hit, x, y)
-            for cell in chunk.cells:
-                self._debris(cell, x, y, offset_y=chunk.offset_y)
-            self.destroyed += len(chunk.cells)
-            self._award(count + len(chunk.cells))
-            self._sparks(x, y, count + len(chunk.cells))
-            self._wave(x, y)
+            chunk.offset_y = float(landing_row - chunk.row)
+            if moving_support is not None:
+                chunk.vy = min(chunk.vy, moving_support.vy)
+                self.falling.append(chunk)
+            elif not self._settle_chunk(chunk, landing_row):
+                # Preserve every letter if an unexpected overlapping fragment
+                # prevents settlement; never overwrite existing captured text.
+                chunk.vy = 0.0
+                self.falling.append(chunk)
 
     def _step_enemies(self, dt: float) -> None:
         p = self.player

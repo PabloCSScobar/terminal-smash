@@ -257,7 +257,7 @@ class TraversalTests(unittest.TestCase):
     def test_hanging_keeps_falling_chunks_particles_and_enemies_running(self):
         cells = [Cell(x, 5, '=') for x in range(20, 30)] + [Cell(25, 6, '|')]
         cells += [Cell(c.x + 45, c.y + 12, c.char) for c in parse_capture('ERROR', 80, 35)]
-        world = World(cells, 80, 35, seed=3)
+        world = World(cells, 80, 35, seed=3, falling_enabled=True)
         world.player.x, world.player.y = 1, 20
         world.update(1 / 90)
         world.destroy(25, 6, 0.4, 0.4)

@@ -66,6 +66,9 @@ class ArcadePhysicsTests(unittest.TestCase):
         world.update(0.12)
         self.assertFalse(world.slamming)
         self.assertGreater(world.destroyed, 0)
+        self.assertLessEqual(world.destroyed, 17)
+        self.assertIn((10, 15), world.cells)
+        self.assertIn((30, 15), world.cells)
         self.assertTrue(world.waves)
         self.assertGreater(world.landing_until, world.time)
         self.assertLess(world.player.y, 20)
@@ -98,9 +101,9 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertEqual(world.destroyed, 1)
         self.assert_conserved(world)
 
-    def test_gravity_choice_survives_reset_and_defaults_to_falling(self):
+    def test_gravity_choice_survives_reset_and_defaults_to_off(self):
         cells = [Cell(10, 5, '='), Cell(10, 6, '|')]
-        self.assertTrue(World(cells, 50, 25).falling_enabled)
+        self.assertFalse(World(cells, 50, 25).falling_enabled)
         for enabled in (False, True):
             world = World(cells, 50, 25, falling_enabled=enabled, duration=30)
             world.destroy(10, 6, 0.4, 0.4)
@@ -117,7 +120,7 @@ class ArcadePhysicsTests(unittest.TestCase):
     def test_row_index_revisions_track_wide_cells_enemies_and_detachment(self):
         cells = [Cell(10, 5, '界', width=2), Cell(10, 6, '|'), Cell(20, 9, '#')]
         cells += [Cell(i, 2, char) for i, char in enumerate('ERROR')]
-        world = World(cells, 50, 25)
+        world = World(cells, 50, 25, falling_enabled=True)
         self.assertFalse(world.cells_by_row[2])
         before = world.terrain_row_revisions[:]
         world.destroy(10, 6, 0.4, 0.4)
@@ -138,10 +141,10 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertFalse(world.falling)
         self.assertEqual(world.destroyed, 0)
 
-    def test_lost_support_collapses_bridge_and_cascades_into_lower_text(self):
+    def test_falling_bridge_settles_quietly_without_damaging_lower_text(self):
         bridge = [Cell(x, 5, '=') for x in range(6, 16)]
         lower = [Cell(x, 12, '#') for x in range(5, 19)]
-        world = World(bridge + lower + [Cell(10, 6, '|'), Cell(40, 4, '!')], 60, 25, seed=3)
+        world = World(bridge + lower + [Cell(10, 6, '|'), Cell(40, 4, '!')], 60, 25, seed=3, falling_enabled=True)
         revision = world.terrain_revision
         self.assertEqual(world.destroy(10, 6, 0.4, 0.4), 1)
         self.assertTrue(world.falling)
@@ -151,14 +154,18 @@ class ArcadePhysicsTests(unittest.TestCase):
         for _ in range(180):
             world.update(1 / 90)
             self.assert_conserved(world)
-        self.assertEqual(world.destroyed, 25)
-        self.assertEqual(set(world.cells), {(40, 4)})
+        self.assertEqual(world.destroyed, 1)
+        self.assertEqual(world.score, 10)
+        self.assertTrue(all(world.cells[(c.x, c.y)] == c for c in lower))
+        self.assertTrue(all(world.cells[(c.x, 11)].char == c.char for c in bridge))
+        self.assertEqual(world.cells[(40, 4)].char, '!')
         self.assertFalse(world.falling)
-        self.assertGreater(world.combo, 1)
+        self.assertFalse(world.waves)
+        self.assertFalse(world.particles)
 
     def test_bridge_waits_until_last_support_is_destroyed(self):
         cells = [Cell(x, 5, '=') for x in range(5, 16)] + [Cell(5, 6, '|'), Cell(15, 6, '|')]
-        world = World(cells, 50, 25)
+        world = World(cells, 50, 25, falling_enabled=True)
         world.destroy(5, 6, 0.4, 0.4)
         self.assertFalse(world.falling)
         self.assertEqual(len(world.cells), 12)
@@ -170,7 +177,7 @@ class ArcadePhysicsTests(unittest.TestCase):
 
     def test_flying_wide_glyphs_remain_atomic_and_keep_style(self):
         style = Style(fg=201, bold=True)
-        world = World([Cell(10, 5, '界', style, 2), Cell(10, 6, '|')], 50, 25)
+        world = World([Cell(10, 5, '界', style, 2), Cell(10, 6, '|')], 50, 25, falling_enabled=True)
         world.destroy(10, 6, 0.4, 0.4)
         self.assertEqual(world.destroyed, 1)
         world.update(0.1)
@@ -198,13 +205,22 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertEqual(world.score, 50)
         self.assert_conserved(world)
 
-    def test_combo_strength_extends_punch_reach(self):
-        # A target just outside ordinary reach is caught by a high-combo punch.
-        for multiplier, expected in ((1, 0), (5, 1)):
-            world = World([Cell(18, 9, '#')], 50, 25)
-            world.player.x, world.player.y = 10, 10
-            world.multiplier = multiplier
-            self.assertEqual(world.punch(), expected)
+    def test_combo_improves_points_without_expanding_attack_reach(self):
+        for attack in ('punch', 'blast'):
+            outcomes = []
+            for multiplier in (1, 5):
+                cells = [Cell(x, y, '#') for y in range(30) for x in range(80)]
+                world = World(cells, 80, 35)
+                world.player.x, world.player.y = 40, 15
+                world.multiplier = multiplier
+                count = getattr(world, attack)()
+                self.assertGreater(count, 0)
+                self.assertLess(count, 80)
+                self.assertIn((48, 14), world.cells)
+                self.assertIn((40, 10), world.cells)
+                outcomes.append(set(world.cells))
+                self.assert_conserved(world)
+            self.assertEqual(outcomes[0], outcomes[1])
 
     def test_whole_error_words_awaken_and_account_for_original_letters(self):
         text = 'ERROR error XERROR ERRORS _ERROR ERROR_ [ERROR]'
@@ -360,11 +376,14 @@ class ArcadePhysicsTests(unittest.TestCase):
 
     def test_clear_waits_for_falling_and_enemies_without_ending_survival(self):
         for duration in (None, 30):
-            world = World([Cell(10, 5, '='), Cell(10, 6, '|')], 50, 25, duration=duration)
+            world = World([Cell(10, 5, '='), Cell(10, 6, '|')], 50, 25, duration=duration, falling_enabled=True)
             world.destroy(10, 6, 0.4, 0.4)
             self.assertFalse(world.cleared)
             self.assertFalse(world.finished)
             advance(world, 2)
+            self.assertEqual(world.destroyed, 1)
+            self.assertFalse(world.cleared)
+            world.destroy(10, world.height - 2, 0.4, 0.4)
             self.assertEqual(world.destroyed, 2)
             if duration is not None:
                 self.assertFalse(world.cleared)
@@ -375,7 +394,7 @@ class ArcadePhysicsTests(unittest.TestCase):
             self.assertFalse(world.finished)
             self.assertEqual(world.destroyed, world.total)
             self.assert_conserved(world)
-        world = World(parse_capture('ERROR', 50, 25), 50, 25, duration=30)
+        world = World(parse_capture('ERROR', 50, 25), 50, 25, duration=30, falling_enabled=True)
         self.assertFalse(world.cleared)
         self.assertFalse(world.finished)
         enemy = world.enemies[0]
@@ -421,9 +440,9 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertFalse(world.finished)
         self.assertEqual(world.time_left, 25)
 
-    def test_dense_cascades_bound_effects_and_conserve_every_character(self):
+    def test_dense_falling_text_bounds_effects_and_conserves_every_character(self):
         cells = [Cell(x, y, '#') for y in range(1, 48) for x in range(160)]
-        world = World(cells, 160, 52, seed=13)
+        world = World(cells, 160, 52, seed=13, falling_enabled=True)
         world.destroy(80, 45, 55, 5)
         for frame in range(120):
             if frame % 9 == 0:
@@ -433,13 +452,13 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertGreater(world.destroyed, 0)
         self.assertLessEqual(len(world.waves), 24)
 
-    def test_pending_falling_chunks_are_included_in_capacity(self):
-        # Many existing fragments fall while impact disconnects more platforms.
+    def test_many_falling_chunks_settle_without_secondary_destruction(self):
+        # Many detached fragments land on lower text without damaging it.
         positions = range(2, 320, 4)
         cells = [Cell(x, 4, '=') for x in positions]
         cells += [Cell(x, 5, '|') for x in positions]
         cells += [Cell(x + dx, 15, '*') for x in positions for dx in (-1, 0, 1)]
-        world = World(cells, 320, 30)
+        world = World(cells, 320, 30, falling_enabled=True)
         world.destroy(160, 5, 200, 0.4)
         self.assertEqual(len(world.falling), 80)
         for chunk in world.falling:
@@ -447,6 +466,9 @@ class ArcadePhysicsTests(unittest.TestCase):
         for _ in range(90):
             world.update(1 / 90)
             self.assert_conserved(world)
+        self.assertEqual(world.destroyed, 80)
+        self.assertFalse(world.falling)
+        self.assertTrue(all((x + dx, 15) in world.cells for x in positions for dx in (-1, 0, 1)))
 
 
 if __name__ == '__main__':

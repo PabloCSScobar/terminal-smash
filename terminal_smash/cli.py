@@ -51,7 +51,7 @@ def _tmux_version() -> str:
 
 
 def _render(text: str, label: str, *, challenge: bool = False,
-            falling_enabled: bool = True, demo: bool = False) -> int:
+            falling_enabled: bool = False, demo: bool = False) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise UserError("The game requires an interactive terminal. Run it in a WSL terminal window.")
     try:
@@ -63,8 +63,8 @@ def _render(text: str, label: str, *, challenge: bool = False,
         options = {}
         if challenge:
             options['challenge'] = True
-        if not falling_enabled:
-            options['falling_enabled'] = False
+        if falling_enabled:
+            options['falling_enabled'] = True
         if demo:
             options['demo'] = True
         run(text, label=label, **options)
@@ -86,7 +86,7 @@ def _read_file(path: Path) -> str:
 
 def _launch_popup(
     pane: str | None, client: str | None, label: str, *, challenge: bool = False,
-    falling_enabled: bool = True
+    falling_enabled: bool = False
 ) -> int:
     if not os.environ.get("TMUX"):
         raise UserError(
@@ -118,8 +118,8 @@ def _launch_popup(
         render_arguments = [str(launcher), "--snapshot", str(snapshot), "--label", label]
         if challenge:
             render_arguments.append("--challenge")
-        if not falling_enabled:
-            render_arguments.extend(["--gravity", "off"])
+        if falling_enabled:
+            render_arguments.extend(["--gravity", "on"])
         renderer = shlex.join(render_arguments)
         command = ["display-popup", "-E", "-B", "-w", "100%", "-h", "100%", "-t", target]
         if client:
@@ -164,7 +164,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--session", action="store_true", help="create or attach to the tmux session named smash")
     parser.add_argument("--challenge", action="store_true", help="play a 30-second survival challenge with local records")
     parser.add_argument("--gravity", choices=("on", "off"), default=None,
-                        help="falling damaged text: on (default) or off")
+                        help="falling damaged text: on or off (default)")
     parser.add_argument("--pane", metavar="ID", help="tmux pane ID, such as %%0")
     parser.add_argument("--client", metavar="TTY", help="tmux client in which to open the game")
     parser.add_argument("--label", default=None, help=argparse.SUPPRESS)
@@ -181,8 +181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session)):
         parser.error("--pane and --client apply only to tmux pane capture")
     render_options = {"challenge": True} if args.challenge else {}
-    if args.gravity == "off":
-        render_options["falling_enabled"] = False
+    if args.gravity == "on":
+        render_options["falling_enabled"] = True
     try:
         if args.doctor:
             return _doctor()

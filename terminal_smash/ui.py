@@ -21,7 +21,7 @@ ROUND_DURATION = 30.0
 class Palette:
     def __init__(self):
         self.pairs: dict[tuple[int, int], int] = {}
-        self.attributes: dict[Style, int] = {}
+        self.attributes: dict[tuple[int | None, int | None, bool], int] = {}
         self.enabled = curses.has_colors()
         self.default = False
         if self.enabled:
@@ -33,11 +33,15 @@ class Palette:
                 pass
 
     def attr(self, style: Style) -> int:
-        if style in self.attributes:
-            return self.attributes[style]
+        # Primitive tuple keys avoid Python dataclass hashing/equality for
+        # every flying letter, and a single lookup also caches attribute zero.
+        key = (style.fg, style.bg, style.bold)
+        result = self.attributes.get(key)
+        if result is not None:
+            return result
         result = self._attribute(style)
         if len(self.attributes) < 4096:
-            self.attributes[style] = result
+            self.attributes[key] = result
         return result
 
     def _attribute(self, style: Style) -> int:
@@ -102,8 +106,8 @@ HELP_LINES = [
     '?                 close help (game is paused)',
     'Esc / Q           return to terminal',
     '',
-    'Chain hits for x2..x5 score and stronger hits.',
-    'Break supports: falling text starts a cascade.',
+    'Chain hits for x2..x5 score.',
+    'Gravity ON: loose text falls without explosions.',
     'ERROR bugs chase you. Hit them before they hit you!',
     'CHALLENGE keeps spawning ERRORs until time runs out.',
     'Five health points. No health = game over.',
@@ -323,7 +327,9 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
         for row, x, text, width, style in terrain.falling_runs(chunk):
             scene(round(row + chunk.offset_y) + 2, x, text, palette.attr(style), width)
     for particle in world.particles:
-        scene(round(particle.y) + 2, round(particle.x), particle.char, palette.attr(particle.style), particle.width)
+        y, x = round(particle.y) + 2, round(particle.x)
+        if 0 <= x and x + particle.width <= cols and 2 <= y < rows - 3:
+            _write_run(win, y, x, particle.char, palette.attr(particle.style))
     for wave in world.waves:
         radius = wave.age * 64
         for i in range(32):
@@ -405,7 +411,7 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
 
 
 def _new_world(text: str, rows: int, cols: int, challenge: bool,
-               falling_enabled: bool = True, *, demo: bool = False,
+               falling_enabled: bool = False, *, demo: bool = False,
                grip_enabled: bool = True) -> World:
     if demo:
         text = build_demo(cols, rows - 5)
@@ -419,7 +425,7 @@ def _new_world(text: str, rows: int, cols: int, challenge: bool,
 
 
 def _main(win, text: str, label: str, challenge: bool = False,
-          falling_enabled: bool = True, demo: bool = False) -> None:
+          falling_enabled: bool = False, demo: bool = False) -> None:
     try:
         curses.curs_set(0)
     except curses.error:
@@ -523,7 +529,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
 
 
 def run(text: str, label: str = 'terminal', *, challenge: bool = False,
-        falling_enabled: bool = True, demo: bool = False) -> None:
+        falling_enabled: bool = False, demo: bool = False) -> None:
 
     locale.setlocale(locale.LC_ALL, '')
     try:
