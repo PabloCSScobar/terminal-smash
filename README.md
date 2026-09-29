@@ -1,6 +1,8 @@
 # Terminal Smash
 
-Ludzik ASCII, który chodzi po tekście terminala i rozbija litery na odłamki. Działa w **Linuxie/WSL**, w zwykłym terminalu tekstowym. Animacja w `curses` odświeża się z docelową szybkością 45 klatek/s; nie jest płynną grafiką wektorową jak animacje przeglądarkowe.
+Ludzik ASCII, który chodzi po tekście terminala i rozbija litery na odłamki. Działa w **Linuxie/WSL**, w zwykłym terminalu tekstowym. Animacja w `curses` odświeża się z docelową szybkością 90 klatek/s; nie jest płynną grafiką wektorową jak animacje przeglądarkowe.
+
+Naciśnięcia klawiszy budzą pętlę gry od razu, a nieruchomy tekst jest buforowany. Ruch jest szybszy, skoki krótsze w czasie, a ataki mają krótsze przerwy. Eksplozje animują odłamki bez przesuwania całego ekranu.
 
 W trybie tmux gra używa kolorowej migawki widocznego panelu. Tekst staje się platformami, a uderzenia wyrzucają znaki w powietrze. Wyjście z gry wraca do prawdziwego terminala; uruchomione programy i historia powłoki działają dalej.
 

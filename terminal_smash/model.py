@@ -65,16 +65,15 @@ class World:
         self.attack_until = 0.0
         self.next_punch = 0.0
         self.next_blast = 0.0
-        self.shake_until = 0.0
 
     def move(self, direction: int) -> None:
         self.direction = 1 if direction > 0 else -1
         self.player.facing = self.direction
-        self.move_until = self.time + 0.18
+        self.move_until = self.time + 0.16
 
     def jump(self) -> None:
         if self.player.grounded or self.player.jumps < 2:
-            self.player.vy = -16.0
+            self.player.vy = -21.0
             self.player.grounded = False
             self.player.jumps += 1
 
@@ -94,18 +93,17 @@ class World:
     def punch(self) -> int:
         if self.time < self.next_punch:
             return 0
-        self.next_punch = self.time + 0.14
-        self.attack_until = self.time + 0.16
+        self.next_punch = self.time + 0.09
+        self.attack_until = self.time + 0.11
         p = self.player
         return self.destroy(p.x + p.facing * 3.0, p.y - 0.8, 4.5, 2.2)
 
     def blast(self) -> int:
         if self.time < self.next_blast:
             return 0
-        self.next_blast = self.time + 0.8
+        self.next_blast = self.time + 0.45
         p = self.player
         self.waves.append(Wave(p.x, p.y - 1.0))
-        self.shake_until = self.time + 0.15
         return self.destroy(p.x, p.y - 1.0, 12.0, 5.5)
 
     def destroy(self, x: float, y: float, rx: float, ry: float) -> int:
@@ -115,10 +113,10 @@ class World:
             c = self.cells.pop(key)
             for dx in range(c.width):
                 self.occupied.pop((c.x + dx, c.y), None)
-            vx = (c.x - x) * 2 + self.rng.uniform(-9, 9)
-            vy = -self.rng.uniform(3, 12) + (c.y - y) * 0.7
+            vx = (c.x - x) * 2.6 + self.rng.uniform(-12, 12)
+            vy = -self.rng.uniform(4, 15) + (c.y - y) * 0.9
             self.particles.append(Particle(c.char, c.style, c.x, c.y, vx, vy,
-                                           self.rng.uniform(0.6, 1.8), c.width))
+                                           self.rng.uniform(0.5, 1.4), c.width))
         self.destroyed += len(hit)
         if hit:
             for _ in range(min(18, len(hit) * 2)):
@@ -141,12 +139,12 @@ class World:
         self.time += dt
         p = self.player
         if self.time < self.move_until:
-            p.vx = self.direction * 25.0
+            p.vx = self.direction * 40.0
         else:
-            p.vx *= math.exp(-16.0 * dt)
+            p.vx *= math.exp(-24.0 * dt)
         p.x = max(1.0, min(self.width - 2.0, p.x + p.vx * dt))
         old_y = p.y
-        p.vy = min(30.0, p.vy + 32.0 * dt)
+        p.vy = min(40.0, p.vy + 54.0 * dt)
         next_y = old_y + p.vy * dt
         p.grounded = False
         if p.vy >= 0:
@@ -175,10 +173,10 @@ class World:
             particle.life -= dt
             particle.x += particle.vx * dt
             particle.y += particle.vy * dt
-            particle.vy += 22.0 * dt
+            particle.vy += 34.0 * dt
             if particle.life > 0 and -4 < particle.y < self.height + 3:
                 alive.append(particle)
         self.particles = alive
         for wave in self.waves:
             wave.age += dt
-        self.waves = [wave for wave in self.waves if wave.age < 0.38]
+        self.waves = [wave for wave in self.waves if wave.age < 0.30]

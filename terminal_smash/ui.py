@@ -4,15 +4,21 @@ from __future__ import annotations
 import curses
 import locale
 import math
+import select
+import sys
 import time
 
 from .capture import Style, parse_capture
 from .model import World
 
 
+FRAME_INTERVAL = 1 / 90
+
+
 class Palette:
     def __init__(self):
         self.pairs: dict[tuple[int, int], int] = {}
+        self.attributes: dict[Style, int] = {}
         self.enabled = curses.has_colors()
         self.default = False
         if self.enabled:
@@ -24,6 +30,14 @@ class Palette:
                 pass
 
     def attr(self, style: Style) -> int:
+        if style in self.attributes:
+            return self.attributes[style]
+        result = self._attribute(style)
+        if len(self.attributes) < 4096:
+            self.attributes[style] = result
+        return result
+
+    def _attribute(self, style: Style) -> int:
         attr = curses.A_BOLD if style.bold else 0
         if not self.enabled:
             return attr
@@ -96,8 +110,41 @@ def _help(win, palette: Palette) -> None:
         _put(win, top + 1 + i, left + 2, line[:width - 4], attr | (curses.A_BOLD if i == 0 else 0))
 
 
-def _draw(win, world: World, palette: Palette, label: str, help_open: bool) -> None:
-    win.erase()
+class TerrainLayer:
+    """Keep the stationary text in a curses window; copy it in native code."""
+
+    def __init__(self):
+        self.window = None
+        self.dimensions = None
+        self.world = None
+        self.cells = None
+        self.destroyed = -1
+
+    def blit(self, win, world: World, palette: Palette) -> None:
+        dimensions = win.getmaxyx()
+        if self.window is None or self.dimensions != dimensions:
+            self.window = curses.newwin(*dimensions)
+            self.dimensions = dimensions
+            self.world = None
+        if self.world is not world or self.cells is not world.cells or self.destroyed != world.destroyed:
+            self.window.erase()
+            rows, cols = dimensions
+            for cell in world.cells.values():
+                y = cell.y + 2
+                if 0 <= cell.x and cell.x + cell.width <= cols and 2 <= y < rows - 2:
+                    _put(self.window, y, cell.x, cell.char, palette.attr(cell.style))
+            self.world = world
+            self.cells = world.cells
+            self.destroyed = world.destroyed
+        # overwrite copies spaces as well, erasing the previous frame's effects.
+        self.window.overwrite(win)
+
+
+def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
+          terrain: TerrainLayer | None = None) -> None:
+    if terrain is None:
+        terrain = TerrainLayer()
+    terrain.blit(win, world, palette)
     rows, cols = win.getmaxyx()
     cyan = palette.attr(Style(fg=51, bold=True))
     dim = palette.attr(Style(fg=244))
@@ -109,23 +156,18 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool) -> N
     if cols >= len(score) + 30:
         _put(win, 0, cols - len(score), score, yellow)
     _put(win, 1, 0, "-" * cols, dim)
-    shift = int(math.sin(world.time * 115) * 1.9) if world.time < world.shake_until else 0
-    for cell in world.cells.values():
-        x, y = cell.x + shift, cell.y + 2
-        if 0 <= x and x + cell.width <= cols and 2 <= y < rows - 2:
-            _put(win, y, x, cell.char, palette.attr(cell.style))
     for particle in world.particles:
         x, y = round(particle.x), round(particle.y) + 2
         if 0 <= x and x + particle.width <= cols and 2 <= y < rows - 2:
             _put(win, y, x, particle.char, palette.attr(particle.style))
     for wave in world.waves:
-        radius = wave.age * 48
+        radius = wave.age * 64
         for i in range(32):
             angle = i * math.tau / 32
             x = round(wave.x + math.cos(angle) * radius)
             y = round(wave.y + math.sin(angle) * radius * 0.45) + 2
             if 0 <= x < cols and 2 <= y < rows - 2:
-                _put(win, y, x, "." if wave.age > 0.18 else "*", yellow)
+                _put(win, y, x, "." if wave.age > 0.14 else "*", yellow)
     p = world.player
     x, y = round(p.x), round(p.y) + 2
     punching = world.time < world.attack_until
@@ -169,6 +211,7 @@ def _main(win, text: str, label: str) -> None:
     win.keypad(True)
     win.nodelay(True)
     palette = Palette()
+    terrain = TerrainLayer()
     world = None
     dimensions = None
     help_open = False
@@ -220,9 +263,11 @@ def _main(win, text: str, label: str) -> None:
         elif world is not None:
             if not help_open:
                 world.update(dt)
-            _draw(win, world, palette, label, help_open)
-        # Fixed frame budget, elapsed time physics: no busy waiting.
-        time.sleep(max(0, 1 / 45 - (time.monotonic() - start)))
+            _draw(win, world, palette, label, help_open, terrain)
+        # Wait for the next frame, but wake immediately when a key arrives.
+        # Terminal input has no release events; the model uses short movement pulses.
+        wait = max(0, FRAME_INTERVAL - (time.monotonic() - start))
+        select.select([sys.stdin], [], [], wait)
 
 
 def run(text: str, label: str = "terminal") -> None:

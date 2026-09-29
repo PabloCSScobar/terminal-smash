@@ -87,6 +87,36 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(world.player.y, 2)
         self.assertGreater(world.blast(), 0)
 
+    def test_fast_movement_is_consistent_across_frame_rates_and_reverses(self):
+        distances = []
+        for fps in (30, 60, 90, 144):
+            world = World([], 200, 25)
+            start = world.player.x
+            for _ in range(fps // 2):
+                world.move(1)
+                world.update(1 / fps)
+            distances.append(world.player.x - start)
+            before_turn = world.player.x
+            world.move(-1)
+            world.update(1 / fps)
+            self.assertLess(world.player.x, before_turn)
+        self.assertTrue(all(19.5 <= distance <= 20.5 for distance in distances))
+        self.assertLess(max(distances) - min(distances), 0.2)
+
+    def test_fast_jump_keeps_platform_reach_and_lands_without_floating(self):
+        world = World([], 80, 30)
+        world.player.y = 28
+        world.player.grounded = True
+        world.jump()
+        heights = []
+        for _ in range(80):
+            world.update(1 / 90)
+            heights.append(world.player.y)
+        self.assertLess(min(heights), 24.2)
+        self.assertGreater(min(heights), 23.5)
+        self.assertTrue(world.player.grounded)
+        self.assertEqual(world.player.y, 28)
+
     def test_particles_expire_and_motion_stays_in_bounds(self):
         world = World([Cell(10, 5, 'X')], 30, 20, seed=2)
         world.destroy(10, 5, 2, 2)
