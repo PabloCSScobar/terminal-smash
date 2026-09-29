@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     game.add_argument("--tower", action="store_true", help="climb to the beginning of the retained terminal history")
     display = parser.add_mutually_exclusive_group()
     display.add_argument("--direct", action="store_true", help="run on the original terminal, temporarily detaching this tmux client")
-    display.add_argument("--popup", action="store_true", help="use the legacy tmux popup instead of direct Tower input")
+    display.add_argument("--popup", action="store_true", help="use the legacy tmux popup instead of direct terminal input")
     parser.add_argument("--gravity", choices=("on", "off"), default=None,
                         help="falling damaged text: on or off (default)")
     parser.add_argument("--pane", metavar="ID", help="tmux pane ID, such as %%0")
@@ -239,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         source = args.file or args.snapshot
         if source is not None:
             return _render(_read_file(source), args.label or source.name, **render_options)
-        if args.direct or (args.tower and not args.popup):
+        if not args.popup:
             from .direct import launch
             return launch(args.pane, args.client, args.label or "terminal", **render_options)
         return _launch_popup(args.pane, args.client, args.label or "terminal", **render_options)

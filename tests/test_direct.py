@@ -83,7 +83,10 @@ class DirectTests(unittest.TestCase):
     def test_failed_exec_timeout_removes_private_snapshot(self):
         self._launch(failure="timeout")
 
-    def _launch(self, failure):
+    def test_smash_captures_only_the_visible_pane(self):
+        self._launch(failure=None, tower=False)
+
+    def _launch(self, failure, *, tower=True):
         with tempfile.TemporaryDirectory(prefix="direct test '$ ") as temporary:
             root = Path(temporary)
             (root / "terminal-smash").touch()
@@ -102,7 +105,7 @@ class DirectTests(unittest.TestCase):
                 if arguments[0] == "display-message":
                     return completed(str(root / "socket '$"))
                 if arguments[0] == "capture-pane":
-                    self.assertEqual(arguments, ["capture-pane", "-p", "-e", "-t", "%4", "-S", "-"])
+                    self.assertEqual(arguments, ["capture-pane", "-p", "-e", "-t", "%4"] + (["-S", "-"] if tower else []))
                     return completed(source)
                 self.assertEqual(arguments[:4], ["detach-client", "-t", "/dev/pts/3", "-E"])
                 outer = shlex.split(arguments[4])
@@ -118,7 +121,7 @@ class DirectTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE((directory / "scene.txt").stat().st_mode), 0o600)
                 state = json.loads((directory / "state.json").read_text())
                 self.assertEqual(state["label"], "label ' $(echo nope)")
-                self.assertTrue(state["tower"])
+                self.assertEqual(state["tower"], tower)
                 self.assertEqual(tokens[4], str(root / "socket '$"))
                 self.assertEqual(tokens[5], "$7")
                 self.assertEqual(tokens[-7:-2], [str(root / "socket '$"), "attach-session", "-E", "-t", "$7"])
@@ -131,9 +134,9 @@ class DirectTests(unittest.TestCase):
             with patch.dict(os.environ, {"TMUX": "socket,1,0", "TMUX_PANE": "%4"}), patch.object(cli, "__file__", str(root / "terminal_smash" / "cli.py")), patch.object(cli, "_tmux", side_effect=tmux), patch.object(direct, "HANDOFF_TIMEOUT", 0):
                 if failure:
                     with self.assertRaisesRegex(cli.UserError, "detach failed|did not start"):
-                        direct.launch(None, None, "label ' $(echo nope)", tower=True)
+                        direct.launch(None, None, "label ' $(echo nope)", tower=tower)
                 else:
-                    self.assertEqual(direct.launch(None, None, "label ' $(echo nope)", tower=True), 0)
+                    self.assertEqual(direct.launch(None, None, "label ' $(echo nope)", tower=tower), 0)
             self.assertEqual(len(bundle), 1)
             self.assertFalse(bundle[0].exists())
 
@@ -142,7 +145,7 @@ class DirectTests(unittest.TestCase):
             with self.subTest(session=session_value, server=server_value):
                 replies = [completed("tmux 3.4"), completed(session_value), completed(server_value)]
                 with patch.dict(os.environ, {"TMUX": "socket,1,0", "TMUX_PANE": "%0"}), patch.object(direct, "_client", return_value=("client", "$9")), patch.object(cli, "_tmux", side_effect=replies) as tmux, patch.object(direct.tempfile, "mkdtemp") as temporary:
-                    with self.assertRaisesRegex(cli.UserError, "--tower --popup"):
+                    with self.assertRaisesRegex(cli.UserError, "--popup"):
                         direct.launch(None, None, "terminal", tower=True)
                     temporary.assert_not_called()
                     commands = [call.args[0] for call in tmux.call_args_list]
@@ -205,12 +208,16 @@ class DirectPtyTests(unittest.TestCase):
     def test_installed_tower_shortcut_quits_real_game_and_can_detach_after_return(self):
         self._round_trip(mode="game")
 
+    def test_installed_smash_shortcut_quits_real_game_and_can_detach_after_return(self):
+        self._round_trip(mode="smash")
+
     def test_policy_guard_preserves_real_client_and_session(self):
         for name, value in (("destroy-unattached", "on"), ("destroy-unattached", "keep-last"), ("destroy-unattached", "keep-group"), ("exit-unattached", "on")):
             with self.subTest(name=name, value=value):
                 self._round_trip(mode=f"policy:{name}:{value}")
 
     def _round_trip(self, mode):
+        real_game = mode in ("game", "smash")
         with tempfile.TemporaryDirectory(prefix="direct pty '$ ") as temporary:
             root = Path(temporary)
             socket = str(root / "test.sock")
@@ -239,7 +246,7 @@ class DirectPtyTests(unittest.TestCase):
                                 + ("    raise RuntimeError('renderer failed')\n" if mode == "error" else
                                    "    data=os.read(0,1024)\n    print('DIRECT_BYTES:'+data.hex(),flush=True)\n    return 0\n")
                                 + "cli._render=render\nraise SystemExit(cli.main())\n")
-            if mode != "game":
+            if not real_game:
                 launcher.write_text(probe_script)
             pid = master = None
             output = bytearray()
@@ -274,20 +281,21 @@ class DirectPtyTests(unittest.TestCase):
                         tmux("set-option", "-t", session, name, value)
                     tmux_env = tmux("display-message", "-p", "#{socket_path},#{pid},0").stdout.strip()
                     with patch.dict(os.environ, {"TMUX": tmux_env, "TMUX_PANE": pane}):
-                        with self.assertRaisesRegex(cli.UserError, "--tower --popup"):
+                        with self.assertRaisesRegex(cli.UserError, "--popup"):
                             direct.launch(pane, tty_name, "history", tower=True)
                     self.assertEqual(tmux("has-session", "-t", session).returncode, 0)
                     self.assertEqual(tmux("list-clients", "-F", "#{client_tty}").stdout.strip(), tty_name)
                     self.assertEqual(tmux("capture-pane", "-p", "-e", "-S", "-", "-t", pane).stdout, before)
                     self.assertFalse(list(private.glob(direct.BUNDLE_PREFIX + "*")))
                     return
-                os.write(master, b"\x02T")
+                os.write(master, b"\x02S" if mode == "smash" else b"\x02T")
                 deadline = time.monotonic() + 5
-                marker = b"SCROLLBACK TOWER" if mode == "game" else b"DIRECT_READY:"
+                marker = (b"TERMINAL SMASH" if mode == "smash" else
+                          b"SCROLLBACK TOWER" if real_game else b"DIRECT_READY:")
                 while marker not in output and time.monotonic() < deadline:
                     drain()
                 self.assertIn(marker, output)
-                if mode != "game":
+                if not real_game:
                     self.assertIn(b":xterm-256color:None", output)
                 release = b"\x1b[97;1:3u"
                 if mode != "error":
@@ -296,7 +304,7 @@ class DirectPtyTests(unittest.TestCase):
                         renderer_pid = int(re.search(rb"DIRECT_READY:(\d+)", output).group(1))
                         os.kill(renderer_pid, signal.SIGTERM)
                     else:
-                        os.write(master, b"q" if mode == "game" else release)
+                        os.write(master, b"q" if real_game else release)
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     drain()

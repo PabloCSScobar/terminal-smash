@@ -68,7 +68,7 @@ def _check_detach_policy(session: str) -> None:
         ("exit-unattached", ["show-options", "-s", "-v", "exit-unattached"]),
     ):
         if _tmux(arguments).stdout.strip() not in ("off", "0"):
-            raise UserError(f"Direct mode cannot detach safely while tmux {name} is enabled. Use --tower --popup instead.")
+            raise UserError(f"Direct mode cannot detach safely while tmux {name} is enabled. Use --popup instead.")
 
 
 def launch(pane: str | None, client: str | None, label: str, *,
@@ -77,7 +77,13 @@ def launch(pane: str | None, client: str | None, label: str, *,
     from . import cli
 
     if not os.environ.get("TMUX"):
-        raise cli.UserError("Direct history capture requires tmux. Use the Tower shortcut inside tmux, or --demo/--file outside tmux.")
+        raise cli.UserError(
+            "To smash the text in your terminal, enter tmux:\n"
+            "  terminal-smash --session\n"
+            "Then press Ctrl+b, followed by Shift+s for free play or Shift+t for Tower,\n"
+            "or run: terminal-smash\n"
+            "Demo without tmux: terminal-smash --demo"
+        )
     cli._tmux_version()
     target = pane or os.environ.get("TMUX_PANE")
     if not target or not re.fullmatch(r"%\d+", target):

@@ -33,6 +33,21 @@ terminal-smash --demo
 
 No pip packages are needed. The installer uses `~/.local`, adds tmux shortcuts and backs up your tmux configuration before changing it. If the command is not found, use `~/.local/bin/terminal-smash` or add `~/.local/bin` to your `PATH`.
 
+### Best experience: recommended terminals
+
+For the smoothest controls, use a terminal that reports both key presses and releases through the [Kitty Keyboard Protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). Movement stays continuous while you hold a key, without waiting for the system's first key repeat, and releasing stops grounded movement promptly.
+
+| Terminal | Compatibility |
+| --- | --- |
+| **Windows Terminal Preview 1.25 + Ubuntu/WSL** | **Tested with the game** using Preview 1.25.1912.0. Preview is a separate app from stable Windows Terminal; in Polish Windows it appears as **Podgląd terminalu**. |
+| **Kitty, Ghostty, Foot** | Implement the protocol; expected to support precise controls, but not yet tested with the game. See the [protocol's implementation list](https://sw.kovidgoyal.net/kitty/keyboard-protocol/). |
+| **Alacritty 0.13+** | Added protocol support in [0.13.0](https://github.com/alacritty/alacritty/releases/tag/v0.13.0); not yet tested with the game. |
+| **WezTerm** | Enable [`enable_kitty_keyboard = true`](https://wezterm.org/config/lua/config/enable_kitty_keyboard.html); not yet tested with the game. |
+
+Support depends on the terminal version and configuration. Run `terminal-smash --keyboard-check` **outside tmux/screen** and look for `Press/release reporting enabled`, followed by a `release` event when you let go of an arrow.
+
+Use **Ctrl+b, then Shift+s** for Smash or **Shift+t** for Tower. Both shortcuts, as well as `terminal-smash`, `terminal-smash --challenge` and `terminal-smash --tower`, use direct terminal input by default. The legacy `--popup` path and terminals without confirmed support still work, but may pause before the first key repeat.
+
 ## Play
 
 ```bash
@@ -45,7 +60,7 @@ terminal-smash --demo --tower  # Try a complete tower without tmux
 
 Inside tmux, press **Ctrl+b**, release it, then press **Shift+s** to play with the visible text or **Shift+t** to open Tower with the pane's full retained history. Press **Esc** to return to your shell. With a custom tmux prefix, use it instead of Ctrl+b.
 
-Tower temporarily detaches only the client that launched it and runs directly in that terminal. Esc reconnects it to the same tmux session; the session and its programs keep running. This lets a compatible terminal send key releases to the game. Use `terminal-smash --tower --popup` for the original tmux popup, or add `--direct` to free play/challenge to use the direct launcher there too. When several clients show the same pane, use the shortcut in the intended client or supply its exact `--client` name.
+When playing a captured tmux pane, all modes temporarily detach only the client that launched them and run directly in that terminal. Esc reconnects it to the same tmux session; the session and its programs keep running. This lets a compatible terminal send key releases to the game for smooth movement and precise taps. Add `--popup` to use the original tmux popup instead. When several clients show the same pane, use the shortcut in the intended client or supply its exact `--client` name.
 
 Direct launch refuses to detach if tmux is configured to destroy unattached sessions or exit when unattached. Use `--popup` with those configurations.
 

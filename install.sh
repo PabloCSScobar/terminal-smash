@@ -98,7 +98,7 @@ def tmux(arguments):
 
 def shortcut_arguments(shortcut):
     command = [str(data / "terminal-smash"), "--pane", "#{pane_id}", "--client", "#{client_name}"]
-    return command + (["--tower", "--direct"] if shortcut == "T" else [])
+    return command + (["--tower"] if shortcut == "T" else []) + ["--direct"]
 
 
 def is_managed_shortcut(shortcut, listing):
@@ -107,7 +107,7 @@ def is_managed_shortcut(shortcut, listing):
         expected = ["bind-key", "-T", "prefix", shortcut, "run-shell", "-b"]
         return (len(binding) == 7 and binding[:6] == expected
                 and shlex.split(binding[6]) in (shortcut_arguments(shortcut),
-                    shortcut_arguments(shortcut)[:-1] if shortcut == "T" else shortcut_arguments(shortcut)))
+                                                shortcut_arguments(shortcut)[:-1]))
     except ValueError:
         return False
 

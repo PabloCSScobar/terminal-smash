@@ -896,7 +896,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 popup_env = dict(env, TMUX=server_env, TMUX_PANE=pane)
                 offset = len(terminal.output)
                 popup = subprocess.Popen(
-                    [sys.executable, str(LAUNCHER), "--pane", pane, "--client", client, "--gravity", "on"],
+                    [sys.executable, str(LAUNCHER), "--popup", "--pane", pane, "--client", client, "--gravity", "on"],
                     cwd=ROOT,
                     env=popup_env,
                     stdin=subprocess.DEVNULL,
@@ -985,11 +985,9 @@ class TerminalIntegrationTests(unittest.TestCase):
                 # hide its short-lived status on a busy host.
                 terminal.send(b"k?")
                 terminal.until(b"HELP", after=offset)
-                # Ncurses may split an incremental label with ANSI sequences;
-                # ask tmux to repaint the paused screen before inspecting it.
-                offset = len(terminal.output)
-                tmux("refresh-client", "-t", client)
-                terminal.until(b"charging", after=offset)
+                # The direct game owns the terminal until it exits; the
+                # original tmux pane remains alive and unchanged meanwhile.
+                self.assertEqual(tmux("list-clients").stdout.strip(), "")
                 self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
                 offset = len(terminal.output)
                 terminal.send(b"\x1b")

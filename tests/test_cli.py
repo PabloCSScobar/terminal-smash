@@ -70,7 +70,7 @@ class CliTests(unittest.TestCase):
                     render.assert_called_once_with("arena", "scene.txt", challenge=True)
 
     def test_challenge_passes_through_tmux_launch(self):
-        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+        with patch("terminal_smash.direct.launch", return_value=0) as launch:
             self.assertEqual(cli.main(["--challenge", "--pane", "%7"]), 0)
         launch.assert_called_once_with("%7", None, "terminal", challenge=True)
 
@@ -146,7 +146,7 @@ class CliTests(unittest.TestCase):
         with patch.object(cli, "_render", return_value=0) as render:
             self.assertEqual(cli.main(["--demo", "--gravity", "on"]), 0)
         render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, falling_enabled=True)
-        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+        with patch("terminal_smash.direct.launch", return_value=0) as launch:
             self.assertEqual(cli.main(["--gravity", "on", "--challenge"]), 0)
         launch.assert_called_once_with(None, None, "terminal", challenge=True, falling_enabled=True)
         self._check_popup(fail=False, challenge=True, falling_enabled=True)
@@ -157,7 +157,7 @@ class CliTests(unittest.TestCase):
                 self.assertEqual(cli.main(arguments), 0)
                 render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True)
         for arguments in ([], ["--gravity", "off"]):
-            with self.subTest(arguments=arguments), patch.object(cli, "_launch_popup", return_value=0) as launch:
+            with self.subTest(arguments=arguments), patch("terminal_smash.direct.launch", return_value=0) as launch:
                 self.assertEqual(cli.main(arguments), 0)
                 launch.assert_called_once_with(None, None, "terminal")
         with tempfile.TemporaryDirectory() as directory:
@@ -322,7 +322,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("--pane '#{pane_id}'", binding)
                 self.assertIn("--client '#{client_name}'", binding)
                 self.assertEqual("--tower" in binding, tower)
-                self.assertEqual("--direct" in binding, tower)
+                self.assertIn("--direct", binding)
             second = self.install(root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(config.read_text(), installed_config)
@@ -373,13 +373,13 @@ class InstallerTests(unittest.TestCase):
                     self.assertIn("--pane", binding)
                     self.assertIn("--client", binding)
                     self.assertEqual("--tower" in binding, tower)
-                    self.assertEqual("--direct" in binding, tower)
+                    self.assertIn("--direct", binding)
 
                 # Model an existing managed installation from before Tower had
                 # its own shortcut, then exercise its actual update/reload path.
                 fragment = root / "config" / "tmux.conf"
                 old_fragment = "\n".join(
-                    line for line in fragment.read_text().splitlines()
+                    line.replace(" --direct", "") for line in fragment.read_text().splitlines()
                     if not line.startswith("bind-key -T prefix T ")
                 ) + "\n"
                 fragment.write_text(old_fragment)

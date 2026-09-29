@@ -119,6 +119,21 @@ class KeyboardIntegrationTests(unittest.TestCase):
 
     def test_a_held_arrow_moves_every_frame_without_repeats_and_release_stops(self):
         terminal = self.open_game()
+        self.check_held_movement_and_tap(terminal)
+
+    def test_smash_held_movement_and_tap_use_press_and_release(self):
+        observer = OBSERVER.replace('ui._draw_tower', 'ui._draw')
+        observer = observer.replace('world.elapsed', 'world.round_elapsed')
+        observer = observer.replace('world.jump_count', 'world.player.jumps')
+        observer = observer.replace("['--file', str(source), '--tower']", "['--file', str(source)]")
+        # Empty floor isolates keyboard movement from collisions with text.
+        observer = '\n'.join("source.write_text('')" if line.startswith('source.write_text(')
+                             else line for line in observer.splitlines())
+        terminal = self.open_game(observer=observer, title=b'TERMINAL SMASH')
+        self.snapshot(terminal, lambda state: state['grounded'])
+        self.check_held_movement_and_tap(terminal)
+
+    def check_held_movement_and_tap(self, terminal):
         terminal.send(arrow(1))
         moving = self.snapshot(terminal, lambda state: state['vx'] > 0)
         first = moving
