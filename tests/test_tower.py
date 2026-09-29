@@ -1,6 +1,7 @@
 """Physics and source-preserving routes for the scrollback tower."""
 
 import math
+from pathlib import Path
 from statistics import median
 import unittest
 from unittest.mock import patch
@@ -69,6 +70,18 @@ def climb_route(world, fps=60):
         raise AssertionError(f'Route did not finish at summit: {world.finish_reason}, {world.player}')
 
 
+def start_chase(world, fps=60):
+    """Leave the safe base through normal jumps, stopping on a real foothold."""
+    for target in reversed(world.platforms):
+        climb_steps(world, [target], fps)
+        if world.scroll_active:
+            if world.finished or not world.player.grounded:
+                raise AssertionError('Chase must start before reaching the summit')
+            world.move(0)
+            return
+    raise AssertionError('Climbing never activated the camera chase')
+
+
 class TowerTests(unittest.TestCase):
     def assert_original_footprints(self, world):
         for platform in world.platforms:
@@ -120,6 +133,19 @@ class TowerTests(unittest.TestCase):
         self.assertEqual(list(world.platforms), route)
         self.assertEqual(world.seed, 37)
 
+    def test_platform_levels_count_heights_from_the_base_including_bridges(self):
+        for text in (('text\n') * 120, 'top\n' + ' ' * 95 + 'bottom'):
+            with self.subTest(text=text[:20]):
+                world = TowerWorld(text, 120, 24, seed=4)
+                rows = sorted({platform.row for platform in world.platforms}, reverse=True)
+                levels = [world.platform_level(platform) for platform in world.platforms]
+                self.assertEqual(levels, [rows.index(platform.row) for platform in world.platforms])
+                world.reset()
+                self.assertEqual([world.platform_level(platform) for platform in world.platforms], levels)
+                world.resize(140, 24)
+                world.resize(120, 24)
+                self.assertEqual([world.platform_level(platform) for platform in world.platforms], levels)
+
     def test_actual_route_controls_reach_summit_at_varied_frame_rates_and_sizes(self):
         histories = [('word\n') * 65, ('long_original_output' * 4 + '\n') * 65,
                      'summit' + '\n' * 65 + 'start', 'top\n' + ' ' * 95 + 'bottom']
@@ -129,6 +155,21 @@ class TowerTests(unittest.TestCase):
                     world = TowerWorld(text, width, viewport, seed=4)
                     climb_route(world, fps)
                     self.assertEqual(world.finish_reason, 'summit')
+
+    def test_long_application_log_remains_climbable_at_maximum_chase_speed(self):
+        text = (Path(__file__).resolve().parents[1] / 'examples' / 'application.log').read_text()
+        world = TowerWorld(text, 80, 9, seed=1)
+        start_chase(world)
+        world.scroll_elapsed = 120
+        climb_route(world)
+        self.assertEqual(world.finish_reason, 'summit')
+
+    def test_close_history_endpoints_remain_reachable_in_small_viewports(self):
+        for viewport in (6, 9, 14):
+            with self.subTest(viewport=viewport):
+                world = TowerWorld('top\n' + ' ' * 60 + 'bottom', 80, viewport, seed=7)
+                climb_route(world)
+                self.assertEqual(world.finish_reason, 'summit')
 
     def test_lower_platforms_are_wider_than_upper_platforms_without_moving_source(self):
         lines = ('x' * 100,
@@ -288,6 +329,7 @@ class TowerTests(unittest.TestCase):
                 self.assertLess(world.floor_row, world.height)
                 self.assertEqual(world.progress, 0)
                 self.assertFalse(world.finished)
+                initial_camera = world.camera_y
                 for direction in (0, 1, -1):
                     for _ in range(120):
                         world.move(direction)
@@ -296,7 +338,104 @@ class TowerTests(unittest.TestCase):
                         self.assertTrue(world.player.grounded)
                         self.assertEqual(world.progress, 0)
                         self.assertFalse(world.finished)
+                        self.assertFalse(world.scroll_active)
+                        self.assertEqual(world.scroll_elapsed, 0)
+                        self.assertEqual(world.camera_y, initial_camera)
                 self.assertEqual(world.jump_count, 0)
+
+    def test_camera_chases_a_stationary_player_after_leaving_the_safe_base(self):
+        world = TowerWorld(('text\n') * 120, 80, 24, seed=7)
+        start_chase(world)
+        self.assertFalse(world.floor_visible)
+        self.assertGreater(world.scroll_speed, 0)
+        initial_y = world.player.y
+        initial_camera = world.camera_y
+        initial_elapsed = world.scroll_elapsed
+        initial_speed = world.scroll_speed
+        for _ in range(60 * 90):
+            camera = world.camera_y
+            world.update(1 / 60)
+            self.assertLessEqual(world.camera_y, camera)
+            self.assertTrue(world.scroll_active)
+            self.assertEqual(world.player.y, initial_y)
+            if world.finished:
+                break
+        self.assertLess(world.camera_y, initial_camera)
+        self.assertGreater(world.scroll_elapsed, initial_elapsed)
+        self.assertGreater(world.scroll_speed, initial_speed)
+        self.assertEqual(world.finish_reason, 'fallen')
+        after = world.camera_y, world.scroll_elapsed, world.scroll_speed
+        advance(world, 5)
+        self.assertEqual((world.camera_y, world.scroll_elapsed, world.scroll_speed), after)
+
+    def test_chase_accumulates_fractional_rows_consistently_across_frame_rates(self):
+        snapshots = []
+        for fps in (30, 60, 144):
+            world = TowerWorld(('text\n') * 120, 80, 24, seed=7)
+            start_chase(world)
+            camera, elapsed = world.camera_y, world.scroll_elapsed
+            advance(world, 1, fps)
+            self.assertFalse(world.finished)
+            self.assertIsInstance(world.camera_y, int)
+            self.assertLess(world.camera_y, camera)
+            self.assertAlmostEqual(world.scroll_elapsed - elapsed, 1, places=6)
+            snapshots.append((world.camera_y, world.scroll_speed))
+        self.assertLessEqual(max(camera for camera, _ in snapshots)
+                             - min(camera for camera, _ in snapshots), 1)
+        self.assertAlmostEqual(snapshots[0][1], snapshots[-1][1], places=6)
+
+    def test_reset_stops_the_chase_and_restores_a_safe_idle_start(self):
+        world = TowerWorld(('text\n') * 120, 80, 24, seed=7)
+        initial_camera = world.camera_y
+        start_chase(world)
+        advance(world, 1)
+        self.assertGreater(world.scroll_elapsed, 0)
+        world.reset()
+        self.assertFalse(world.scroll_active)
+        self.assertEqual(world.scroll_elapsed, 0)
+        self.assertEqual(world.camera_y, initial_camera)
+        self.assertTrue(world.floor_visible)
+        self.assertEqual(world.player.y, world.floor_row - 1)
+        advance(world, 30)
+        self.assertFalse(world.finished)
+        self.assertFalse(world.scroll_active)
+        self.assertEqual(world.scroll_elapsed, 0)
+        self.assertEqual(world.camera_y, initial_camera)
+
+    def test_clipped_resize_pauses_an_active_chase_and_resuming_preserves_it(self):
+        world = TowerWorld((' ' * 70 + 'text\n') * 120, 100, 24, seed=7)
+        start_chase(world)
+        world.resize(44, 24)
+        self.assertTrue(world.resize_blocked)
+        before = (world.camera_y, world.scroll_active, world.scroll_elapsed,
+                  world.scroll_speed, world.player.x, world.player.y)
+        world.move(-1)
+        world.jump()
+        world.drop()
+        advance(world, 30)
+        self.assertEqual((world.camera_y, world.scroll_active, world.scroll_elapsed,
+                          world.scroll_speed, world.player.x, world.player.y), before)
+        world.resize(100, 24)
+        self.assertFalse(world.resize_blocked)
+        self.assertTrue(world.scroll_active)
+        self.assertEqual(world.scroll_elapsed, before[2])
+        advance(world, 1)
+        self.assertGreater(world.scroll_elapsed, before[2])
+        self.assertLess(world.camera_y, before[0])
+
+    def test_a_stalled_frame_does_not_fast_forward_the_chase(self):
+        world = TowerWorld(('text\n') * 120, 80, 24, seed=7)
+        start_chase(world)
+        before = world.camera_y, world.scroll_elapsed, world.elapsed
+        world.update(30)
+        self.assertAlmostEqual(world.elapsed - before[2], 30)
+        self.assertAlmostEqual(world.scroll_elapsed - before[1], 0.12)
+        self.assertLessEqual(before[0] - world.camera_y, 1)
+        self.assertFalse(world.finished)
+        after = world.camera_y, world.scroll_elapsed, world.scroll_speed
+        for dt in (0, -1, float('inf'), float('nan')):
+            world.update(dt)
+        self.assertEqual((world.camera_y, world.scroll_elapsed, world.scroll_speed), after)
 
     def test_repeated_drop_cannot_pass_through_the_safe_floor(self):
         world = TowerWorld(('text\n') * 60, 44, 24, seed=7)

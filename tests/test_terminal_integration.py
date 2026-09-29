@@ -202,7 +202,7 @@ class TerminalIntegrationTests(unittest.TestCase):
             "    temporary.write_text(json.dumps(dict(world=id(world), rows=rows, columns=columns, "
             "x=world.player.x, y=world.player.y, elapsed=world.elapsed, progress=world.progress, "
             "total=world.total_climb, help=help_open, finished=world.finished, "
-            "floor=world.floor_row, grounded=world.player.grounded)))\n"
+            "floor=world.floor_row, grounded=world.player.grounded, vx=world.player.vx)))\n"
             "    temporary.replace(state)\n"
             "ui._draw_tower = observe\n"
             "render = ui._draw\n"
@@ -249,6 +249,49 @@ class TerminalIntegrationTests(unittest.TestCase):
             terminal.send(b"R")
             start = tower_state(lambda state: state["elapsed"] < 0.1 and state["grounded"])
 
+            # Ordinary curses only receives presses. Reproduce the initial
+            # keyboard-repeat delay using actual application-mode arrow bytes:
+            # movement must remain smooth during the otherwise silent gap.
+            direction = 1 if start["x"] < 50 else -1
+            arrow = b"\x1bOC" if direction > 0 else b"\x1bOD"
+            terminal.send(arrow)
+            previous = start
+            for _ in range(3):
+                terminal.pump(0.15)
+                moving = tower_state(lambda state: state["elapsed"] > previous["elapsed"])
+                self.assertEqual(moving["vx"], direction * 45)
+                self.assertGreater((moving["x"] - previous["x"]) * direction, 4)
+                previous = moving
+            for _ in range(4):
+                terminal.send(arrow)
+                terminal.pump(0.035)
+            terminal.pump(0.3)
+            stopped = tower_state(lambda state: state["elapsed"] > previous["elapsed"] + 0.3)
+            self.assertLess(abs(stopped["vx"]), 0.6)
+            terminal.pump(0.1)
+            still = tower_state(lambda state: state["elapsed"] > stopped["elapsed"])
+            self.assertLess(abs(still["x"] - stopped["x"]), 0.04)
+
+            # Restart must discard the old hold rather than drive the new
+            # attempt for the rest of its initial key-repeat grace.
+            terminal.send(b"aR")
+            start = tower_state(lambda state: state["elapsed"] < 0.1)
+            terminal.pump(0.2)
+            restarted_still = tower_state(lambda state: state["elapsed"] > 0.2)
+            self.assertEqual(restarted_still["x"], start["x"])
+
+            terminal.send(b"a")
+            tower_state(lambda state: state["vx"] == -45)
+            terminal.resize(32, 100)
+            resize_stop = tower_state(lambda state: state["rows"] == 32 and state["vx"] == 0)
+            terminal.pump(0.15)
+            resized_still = tower_state(lambda state: state["elapsed"] > resize_stop["elapsed"])
+            self.assertEqual(resized_still["x"], resize_stop["x"])
+            terminal.resize(30, 100)
+            tower_state(lambda state: state["rows"] == 30)
+            terminal.send(b"R")
+            start = tower_state(lambda state: state["elapsed"] < 0.1 and state["grounded"])
+
             terminal.send(b"dw")
             moved = tower_state(lambda state: state["x"] > start["x"] + 0.2
                                 and state["y"] < start["y"] - 0.2)
@@ -274,7 +317,8 @@ class TerminalIntegrationTests(unittest.TestCase):
             self.assertAlmostEqual(resized["x"] / 120, paused["x"] / 100)
 
             terminal.send(b"?")
-            tower_state(lambda state: not state["help"] and state["elapsed"] > paused["elapsed"] + 0.1)
+            resumed = tower_state(lambda state: not state["help"] and state["elapsed"] > paused["elapsed"] + 0.1)
+            self.assertEqual(resumed["x"], resized["x"], "Help and resize must clear the movement hold")
             terminal.send(b"R?")
             restarted = tower_state(lambda state: state["help"] and state["elapsed"] == 0)
             self.assertEqual(restarted["progress"], 0)

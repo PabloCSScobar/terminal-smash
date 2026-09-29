@@ -142,6 +142,9 @@ class TowerWorld:
     JUMP_SPEED = 47.0
     MOVE_SPEED = 45.0
     MAX_FALL_SPEED = 75.0
+    SCROLL_START_SPEED = 1.0
+    SCROLL_ACCELERATION = 0.025
+    SCROLL_MAX_SPEED = 4.0
 
     def __init__(self, text: str, width: int, viewport_height: int, *, seed: int | None = None):
         self.width = max(8, int(width))
@@ -161,25 +164,28 @@ class TowerWorld:
         self.reset()
 
     def _configure_jump(self) -> None:
-        # A full-height jump must leave its takeoff row within a tiny viewport.
-        # This also permits short natural connections without a camera death.
+        # Short viewports need lower jumps and room below the player for the
+        # camera chase. Even adjacent original rows must remain landable.
         maximum_rise = min(self.JUMP_SPEED ** 2 / (2 * self.ASCENT_GRAVITY),
-                           self.viewport_height - 2.0)
+                           max(3.0, self.viewport_height - 5.0))
         self.jump_speed = math.sqrt(2 * self.ASCENT_GRAVITY * maximum_rise)
         self.jump_height = maximum_rise
         self.max_step = max(1, math.floor(maximum_rise - 0.65))
         self.max_natural_step = max(1, math.floor(2 * maximum_rise - 0.70))
         self.follow_row = max(1, min(self.viewport_height // 3,
-                                    self.viewport_height - math.ceil(maximum_rise) - 1))
+                                    self.viewport_height - math.ceil(maximum_rise) - 4))
         self._jump_options: dict[int, list[tuple[float | None, float]]] = {}
         ascent_time = self.jump_speed / self.ASCENT_GRAVITY
+        available = self.viewport_height - self.follow_row - 1
+        reserve = min(3.0, available - (maximum_rise - 1))
+        landing_room = available - reserve
         for rise in range(self.max_natural_step + 1):
             options = []
             # Include the longest useful second-jump delay that still leaves
-            # the destination in the camera. A few fixed timings alone could
-            # miss a valid natural horizontal connection between two timings.
+            # the destination in view, with a buffer for camera drift during
+            # landing and the walk to the next takeoff point.
             extra_height = min(maximum_rise, max(0.0,
-                rise + self.viewport_height - self.follow_row - 1 - maximum_rise))
+                rise + landing_room - maximum_rise))
             latest = (self.jump_speed - math.sqrt(max(0.0,
                 self.jump_speed ** 2 - 2 * self.ASCENT_GRAVITY * extra_height))) / self.ASCENT_GRAVITY
             delays = sorted({ascent_time * fraction for fraction in (0.25, 0.5, 0.75, 1.0)} | {latest})
@@ -187,7 +193,7 @@ class TowerWorld:
                 height = maximum_rise if delay is None else maximum_rise + (
                     self.jump_speed * delay - 0.5 * self.ASCENT_GRAVITY * delay ** 2)
                 if (height - rise < 0.65
-                        or height - rise > self.viewport_height - self.follow_row - 1):
+                        or height - rise > landing_room):
                     continue
                 flight = (delay or 0) + ascent_time + math.sqrt(2 * (height - rise) / self.FALL_GRAVITY)
                 options.append((delay, self.MOVE_SPEED * flight - 3.0))
@@ -224,9 +230,29 @@ class TowerWorld:
         narrow = min(broad, 6)
         return round(broad + (narrow - broad) * climbed)
 
+    def platform_level(self, platform: Platform) -> int:
+        """Count foothold heights from the base; shared rows share a colour."""
+        return max(0, len(self._platform_rows) - bisect_left(self._platform_rows, platform.row) - 1)
+
     @property
     def floor_visible(self) -> bool:
         return self.camera_y <= self.floor_row < self.camera_y + self.viewport_height
+
+    @property
+    def scroll_speed(self) -> float:
+        if not self.scroll_active:
+            return 0.0
+        limit = min(self.SCROLL_MAX_SPEED, self.viewport_height / 6.0)
+        if self.player.grounded:
+            supports = self.platforms.by_row.get(round(self.player.y + 1), ())
+            span = max((platform.right - platform.left for platform in supports
+                        if self.player.x + 1 >= platform.left and self.player.x - 1 < platform.right),
+                       default=0)
+            if span > 24:
+                # A distant piece of real output can require walking across a
+                # wide bridge. Leave time to cross it without stopping the chase.
+                limit = min(limit, 1.5 / (span / self.MOVE_SPEED + 0.6))
+        return min(limit, self.SCROLL_START_SPEED + self.SCROLL_ACCELERATION * self.scroll_elapsed)
 
     def _candidates(self, cells: tuple[Cell, ...], rng: random.Random) -> list[Platform]:
         groups: list[list[Cell]] = []
@@ -290,6 +316,7 @@ class TowerWorld:
         return tuple(bridges)
 
     def _build_route(self) -> None:
+        self._platform_rows = []
         rng = random.Random(self.seed)
         recent: list[_FrontierRow] = []
         previous: list[_RouteNode] = []
@@ -362,6 +389,7 @@ class TowerWorld:
             node = node.parent
             route.append(node.platform)
         self.platforms = _Platforms(reversed(route))
+        self._platform_rows = sorted(self.platforms.by_row)
         self.summit_row = self.platforms[0].row
         self.start_row = self.platforms[-1].row
         self.total_climb = self.start_row - self.summit_row
@@ -393,6 +421,9 @@ class TowerWorld:
         self.finish_reason = ''
         self.best_y = self.player.y
         self.camera_y = max(0, self.floor_row - self.viewport_height + 1)
+        self.scroll_active = False
+        self.scroll_elapsed = 0.0
+        self._scroll_fraction = 0.0
         self.direction = 0
         self.move_until = self.drop_until = 0.0
 
@@ -482,6 +513,7 @@ class TowerWorld:
                 self.player.x = self.landing_x(support, self.player.x)
         self.player.vx = 0.0
         self.move_until = self.time
+        self._platform_rows = sorted(self.platforms.by_row)
         maximum = max(0, self.height - viewport_height)
         camera = min(self.camera_y, maximum)
         if not camera + 2 <= self.player.y <= camera + viewport_height - 2:
@@ -502,6 +534,24 @@ class TowerWorld:
         self.finished = True
         self.finish_reason = reason
         self.player.vx = self.player.vy = 0.0
+
+    def _advance_camera(self, dt: float) -> None:
+        follow = math.floor(self.player.y) - self.follow_row
+        if follow < self.camera_y:
+            self.camera_y = follow
+            self._scroll_fraction = 0.0
+        if not self.scroll_active:
+            if self.floor_visible:
+                return
+            self.scroll_active = True
+        # Integrate fractional rows independently of the render frame rate.
+        # Following a jump can move faster, but waiting never stops the chase.
+        before = self.scroll_speed
+        self.scroll_elapsed += dt
+        self._scroll_fraction += (before + self.scroll_speed) * 0.5 * dt
+        rows = math.floor(self._scroll_fraction)
+        self.camera_y -= rows
+        self._scroll_fraction -= rows
 
     def _step(self, dt: float) -> None:
         self.time += dt
@@ -540,7 +590,7 @@ class TowerWorld:
             landed = None
         p.y = next_y
         self.best_y = min(self.best_y, p.y)
-        self.camera_y = min(self.camera_y, math.floor(p.y) - self.follow_row)
+        self._advance_camera(dt)
         summit = self.platforms[0]
         if landed == summit:
             self._finish('summit')

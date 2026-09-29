@@ -4,16 +4,114 @@ import curses
 import unittest
 from unittest.mock import patch
 
+from terminal_smash.capture import Cell, Style
 from terminal_smash.demo import build_tower_demo
 from terminal_smash.tower import Platform, TowerWorld
 from terminal_smash.ui import _draw, _new_world
 from tests.test_rendering import Canvas, PlainPalette
 
 
+class PaletteProbe:
+    """Retain each requested style through the renderer's curses flag masks."""
+
+    def __init__(self):
+        self.tokens = {}
+        self.styles = {}
+
+    def attr(self, style):
+        if style not in self.tokens:
+            token = len(self.tokens) + 1
+            self.tokens[style] = token
+            self.styles[token] = style
+        return self.tokens[style]
+
+    def style(self, attributes):
+        # Curses attribute flags are above the low character byte. These small
+        # fake tokens let the test inspect the style actually written on screen.
+        return self.styles[attributes & 0xff]
+
+
 class TowerRenderingTests(unittest.TestCase):
-    def draw(self, screen, world, *, help_open=False):
+    def draw(self, screen, world, *, help_open=False, palette=None):
         with patch('terminal_smash.ui.curses.doupdate'):
-            _draw(screen, world, PlainPalette(), 'history', help_open)
+            _draw(screen, world, palette or PlainPalette(), 'history', help_open)
+
+    def platform_foreground(self, world, platform, offset=4):
+        world.camera_y = platform.row - offset
+        world.player.y = -100
+        screen = Canvas(world.viewport_height + 5, world.width)
+        palette = PaletteProbe()
+        with patch.object(screen, 'addstr', wraps=screen.addstr) as writes:
+            self.draw(screen, world, palette=palette)
+        highlighted = [call.args for call in writes.call_args_list
+                       if call.args[0] == offset + 2
+                       and call.args[3] & curses.A_UNDERLINE]
+        self.assertTrue(highlighted, 'The selected original text must be highlighted')
+        colours = {palette.style(attributes).fg for _, _, _, attributes in highlighted}
+        self.assertEqual(len(colours), 1)
+        return colours.pop()
+
+    def test_platform_bands_follow_twelve_route_rows_and_stay_stable_when_scrolling(self):
+        world = TowerWorld(('result: 界界 build completed successfully\n') * 500,
+                           80, 19, seed=17)
+        from_bottom = list(reversed(world.platforms))
+        levels = (0, 1, 11, 12, 13, 23, 24, 25, 35)
+        self.assertGreater(len(from_bottom), max(levels) + 1)
+        colours = {}
+        for level in levels:
+            platform = from_bottom[level]
+            self.assertFalse(platform.synthetic)
+            self.assertEqual(world.platform_level(platform), level)
+            colours[level] = self.platform_foreground(world, platform)
+            self.assertEqual(colours[level], self.platform_foreground(world, platform, offset=7),
+                             'Scrolling must not recolour a platform into another band')
+        self.assertEqual({colours[level] for level in (0, 1, 11)}, {colours[0]})
+        self.assertEqual({colours[level] for level in (12, 13, 23)}, {colours[12]})
+        self.assertEqual({colours[level] for level in (24, 25, 35)}, {colours[24]})
+        self.assertEqual(len({colours[0], colours[12], colours[24]}), 3)
+        self.assertNotIn(220, colours.values(), 'The route bands must remain distinct from the summit')
+        self.assertEqual(self.platform_foreground(world, world.platforms[0]), 220)
+
+    def test_artificial_bridge_and_original_glyphs_use_the_same_height_band(self):
+        # A long empty section creates real emergency bridges in several bands.
+        world = TowerWorld('SUMMIT\n' + '\n' * 180 + 'lower output', 80, 19, seed=7)
+        reference = TowerWorld(('ordinary highlighted output\n') * 500, 80, 19, seed=7)
+        reference_steps = list(reversed(reference.platforms))
+        bridges = {}
+        for platform in world.platforms:
+            if platform.synthetic:
+                band = world.platform_level(platform) // 12
+                bridges.setdefault(band, platform)
+        self.assertIn(0, bridges)
+        self.assertIn(1, bridges)
+        for band in (0, 1):
+            bridge = bridges[band]
+            expected_colour = self.platform_foreground(reference, reference_steps[band * 12])
+            self.assertEqual(world.platform_level(bridge) // 12, band)
+            observed_colours = []
+            for offset in (4, 7):
+                world.camera_y = bridge.row - offset
+                world.player.y = -100
+                # Real output inside an emergency span must keep its glyph and
+                # receive the same band as the artificial pieces around it.
+                glyph = Cell(bridge.left + 1, bridge.row, '界', Style(fg=1), width=2)
+                screen = Canvas(24, 80)
+                palette = PaletteProbe()
+                with patch.object(world, 'visible_cells', return_value=[glyph]), \
+                        patch.object(world, 'visible_platforms', return_value=[bridge]), \
+                        patch.object(screen, 'addstr', wraps=screen.addstr) as writes:
+                    self.draw(screen, world, palette=palette)
+                self.assertEqual(screen.grid[offset + 2][glyph.x:glyph.x + 2], ['界', '~'])
+                row_writes = [call.args for call in writes.call_args_list
+                              if call.args[0] == offset + 2 and not call.args[3] & curses.A_DIM]
+                self.assertTrue(any('=' in text or '[' in text or ']' in text
+                                    for _, _, text, _ in row_writes))
+                self.assertTrue(any(text == '界' and attributes & curses.A_UNDERLINE
+                                    for _, _, text, attributes in row_writes))
+                colours = {palette.style(attributes).fg for _, _, _, attributes in row_writes}
+                self.assertEqual(colours, {expected_colour})
+                observed_colours.append(colours)
+            self.assertEqual(observed_colours[0], observed_colours[1])
 
     def test_camera_offsets_history_and_erases_old_sprites_and_help(self):
         world = TowerWorld('\n'.join(f'{row:04d} session output' for row in range(220)), 80, 19)
@@ -155,11 +253,20 @@ class TowerRenderingTests(unittest.TestCase):
         world.player.y = -100
         self.assertTrue(any(platform.synthetic for platform in world.platforms))
         screen = Canvas(24, 80)
-        self.draw(screen, world)
+        palette = PaletteProbe()
+        with patch.object(screen, 'addstr', wraps=screen.addstr) as writes:
+            self.draw(screen, world, palette=palette)
         row = ''.join(screen.grid[world.start_row + 2])
         self.assertTrue(row.startswith('BOTTOM'))
         self.assertIn('=', row[6:70])
         self.assertEqual(''.join(screen.grid[world.summit_row + 2][70:73]), 'TOP')
+        supports = world.platforms.by_row[world.start_row]
+        self.assertTrue(any(platform.synthetic for platform in supports))
+        self.assertTrue(any(not platform.synthetic for platform in supports))
+        self.assertEqual({world.platform_level(platform) for platform in supports}, {0})
+        colours = {palette.style(call.args[3]).fg for call in writes.call_args_list
+                   if call.args[0] == world.start_row + 2 and not call.args[3] & curses.A_DIM}
+        self.assertEqual(len(colours), 1, 'Same-row bridge and source text must share one band')
 
     def test_clipped_route_explains_that_the_attempt_is_paused(self):
         world = TowerWorld('old output\n' + '\n' * 15 + ' ' * 60 + 'new output',

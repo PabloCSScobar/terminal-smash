@@ -10,6 +10,7 @@ import time
 
 from .capture import Style, parse_capture
 from .demo import build_demo, build_tower_demo
+from .input import HorizontalInput
 from .model import World
 from .records import arena_key, load_best, save_best
 from .tower import TowerWorld
@@ -17,6 +18,8 @@ from .tower import TowerWorld
 
 FRAME_INTERVAL = 1 / 90
 ROUND_DURATION = 30.0
+TOWER_COLOR_BAND_SIZE = 12
+TOWER_PLATFORM_COLORS = (51, 213, 118, 208, 141, 45)
 
 
 class Palette:
@@ -124,12 +127,14 @@ TOWER_HELP_LINES = [
     'Dim text is the history behind your route.',
     'Bridges appear only across unreachable gaps.',
     'Footholds narrow as you climb higher.',
+    'Foothold colors change every 12 steps.',
     'A / D or arrows   run / steer in the air',
     'Space / W / up    jump (twice in the air)',
     'S / down          drop through a platform',
-    'Keep climbing: the camera only follows up.',
     'The base floor catches early missed jumps.',
-    'Once it scrolls away, falling below ends the run.',
+    'Once it scrolls away, the camera chases you.',
+    'The chase gradually speeds up. Keep climbing!',
+    'Falling below the screen ends the run.',
     'Reach the oldest highlighted text to win.',
     'R                 retry from the bottom',
     'V / C             free play / challenge',
@@ -465,14 +470,15 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
     for row, x, text, width, style in _text_runs(cells):
         scene(row, x, text, width, palette.attr(style) | curses.A_DIM)
     for platform in platforms:
-        attr = gold if platform.row == world.summit_row else cyan
+        band = world.platform_level(platform) // TOWER_COLOR_BAND_SIZE
+        color = TOWER_PLATFORM_COLORS[band % len(TOWER_PLATFORM_COLORS)]
+        attr = gold if platform.row == world.summit_row else palette.attr(Style(fg=color, bold=True))
         row_cells = [cell for cell in cells if cell.y == platform.row]
         if platform.synthetic:
             # Emergency connectors fill only empty space. Even a horizontal
             # bridge must keep every original glyph (including wide ones).
             occupied = {column for cell in row_cells
                         for column in range(cell.x, cell.x + cell.width)}
-            bridge_attr = palette.attr(Style(fg=110, bold=True))
             start = platform.left
             while start < platform.right:
                 if start in occupied:
@@ -484,7 +490,7 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
                 glyphs = ''.join('[' if x == platform.left else
                                  ']' if x == platform.right - 1 else '='
                                  for x in range(start, end))
-                scene(platform.row, start, glyphs, end - start, bridge_attr)
+                scene(platform.row, start, glyphs, end - start, attr)
                 start = end
         selected = [cell for cell in row_cells
                     if cell.x < platform.right and cell.x + cell.width > platform.left]
@@ -582,6 +588,8 @@ def _main(win, text: str, label: str, challenge: bool = False,
     world = None
     record = None
     dimensions = None
+    input_dimensions = None
+    horizontal = HorizontalInput()
     help_open = False
     help_page = 0
     last = time.monotonic()
@@ -591,6 +599,9 @@ def _main(win, text: str, label: str, challenge: bool = False,
         rows, cols = win.getmaxyx()
         playable = rows >= 14 and cols >= 44
         rebuilt = False
+        if input_dimensions != (rows, cols):
+            horizontal.clear(world)
+            input_dimensions = (rows, cols)
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
             if tower and isinstance(world, TowerWorld):
@@ -606,6 +617,10 @@ def _main(win, text: str, label: str, challenge: bool = False,
         dt = 0.0 if rebuilt else now - last
         last = now
         if playable and world is not None and not help_open:
+            if world.finished or (tower and (world.empty or world.resize_blocked)):
+                horizontal.clear(world)
+            else:
+                horizontal.apply(world, now)
             world.update(dt)
             if record:
                 record.finish(world)
@@ -616,6 +631,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
             if key in (27, ord('q'), ord('Q'), 3):
                 return
             if key == ord('?'):
+                horizontal.clear(world)
                 help_open = not help_open
                 help_page = 0
                 continue
@@ -628,12 +644,14 @@ def _main(win, text: str, label: str, challenge: bool = False,
                     help_page -= 1
                 continue
             if key in (ord('c'), ord('C')):
+                horizontal.clear(world)
                 tower = False
                 challenge = not challenge
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('v'), ord('V')):
+                horizontal.clear(world)
                 tower = not tower
                 challenge = False
                 world = _new_world(text, rows, cols, challenge, falling_enabled,
@@ -641,27 +659,27 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 record = None if tower else RoundRecord(world)
                 rebuilt = True
             elif key in (ord('g'), ord('G')) and not tower:
+                horizontal.clear(world)
                 falling_enabled = not falling_enabled
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
+                horizontal.clear(world)
                 world.reset()
                 record = None if tower else RoundRecord(world)
                 rebuilt = True
+            elif key in (ord('a'), ord('A'), curses.KEY_LEFT):
+                horizontal.press(-1, time.monotonic())
+                horizontal.apply(world, time.monotonic())
+            elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
+                horizontal.press(1, time.monotonic())
+                horizontal.apply(world, time.monotonic())
             elif tower:
-                if key in (ord('a'), ord('A'), curses.KEY_LEFT):
-                    world.move(-1)
-                elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
-                    world.move(1)
-                elif key in (ord('w'), ord('W'), curses.KEY_UP, ord(' ')):
+                if key in (ord('w'), ord('W'), curses.KEY_UP, ord(' ')):
                     world.jump()
                 elif key in (ord('s'), ord('S'), curses.KEY_DOWN):
                     world.drop()
-            elif key in (ord('a'), ord('A'), curses.KEY_LEFT):
-                world.move(-1)
-            elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
-                world.move(1)
             elif key in (ord('w'), ord('W'), curses.KEY_UP):
                 world.climb_up()
             elif key == ord(' '):
@@ -677,6 +695,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
             elif key in (ord('x'), ord('X')):
                 world.slam()
             elif key in (ord('t'), ord('T'), curses.KEY_HOME):
+                horizontal.clear(world)
                 world.return_to_top()
             # Save a finished round before another queued key can restart
             # the scene, switch modes or exit in this same input batch.
