@@ -2,6 +2,21 @@
 
 An ASCII game inside your terminal. Run, jump and smash a copy of your terminal's text, or play the built-in demo. Your actual shell and running programs are unaffected.
 
+![Terminal Smash attacking text in a captured tmux session](docs/screenshots/smash-attack.png)
+
+<details>
+<summary>More screenshots</summary>
+
+**Free play on a captured terminal session**
+
+![Terminal Smash free play with the health bar and keyboard controls](docs/screenshots/terminal-session.png)
+
+**Challenge mode with ERROR enemies**
+
+![Terminal Smash challenge with three ERROR enemies and a round timer](docs/screenshots/challenge-enemies.png)
+
+</details>
+
 ## Install
 
 Requires Linux or WSL, Python 3.10+ with `curses`, and a terminal at least 44×14 characters. Capturing your terminal also requires tmux 3.4+; the demo works without tmux.
