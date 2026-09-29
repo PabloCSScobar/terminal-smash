@@ -15,6 +15,26 @@ _LOGS = (
 )
 
 
+def build_tower_demo(width: int) -> str:
+    """A finite, colourful shell history for the scrollback climbing mode."""
+    width = max(8, width)
+    lines = ['\x1b[1;33m$ session started -- welcome to the summit\x1b[0m']
+    for row in range(1, 160):
+        if 48 <= row < 56 or row % 13 == 0:
+            lines.append('')
+            continue
+        indent = 2 + (row // 6 * 5) % max(1, width - 25)
+        fragment = _LOGS[row % len(_LOGS)]
+        if row % 17 == 0:
+            fragment = '$ make test && echo READY'
+        elif row % 11 == 0:
+            fragment = f'test_{row:03d} ... passed'
+        colour = (32, 34, 35, 36)[row % 4]
+        lines.append(' ' * indent + f'\x1b[{colour}m' + fragment[:width - indent] + '\x1b[0m')
+    lines.append('\x1b[1;36m$ terminal-smash --tower\x1b[0m')
+    return '\n'.join(lines)
+
+
 def build_demo(width: int, height: int) -> str:
     """Build ANSI text for the visible terrain rectangle, without wrapping.
 

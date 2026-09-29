@@ -176,7 +176,8 @@ def _escape(text: str, start: int, style: Style) -> tuple[int, Style]:
     return index, style
 
 
-def parse_capture(text: str, width: int, height: int, *, start_row: int = 0) -> list[Cell]:
+def parse_capture(text: str, width: int, height: int, *, start_row: int = 0,
+                  initial_style: Style = Style()) -> list[Cell]:
     """Parse visible non-whitespace cells within a screen rectangle.
 
     Coordinates are zero-based, relative to start_row. Earlier lines are read
@@ -186,6 +187,7 @@ def parse_capture(text: str, width: int, height: int, *, start_row: int = 0) -> 
     returns to column zero and subsequent printable text overwrites earlier text.
     Spaces advance the cursor but are not destructible cells, even with a colour
     background. Unsupported cursor movement sequences are consumed and ignored.
+    initial_style carries SGR attributes into an independently indexed row.
     """
     if width <= 0 or height <= 0:
         return []
@@ -193,7 +195,7 @@ def parse_capture(text: str, width: int, height: int, *, start_row: int = 0) -> 
     cells: dict[tuple[int, int], Cell] = {}
     occupied: dict[tuple[int, int], tuple[int, int]] = {}
     x = y = index = 0
-    style = Style()
+    style = initial_style
     previous: tuple[int, int] | None = None
 
     def erase(column: int) -> None:

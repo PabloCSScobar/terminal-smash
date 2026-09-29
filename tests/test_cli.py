@@ -86,6 +86,59 @@ class CliTests(unittest.TestCase):
     def test_challenge_popup_keeps_flag_with_private_snapshot(self):
         self._check_popup(fail=False, challenge=True)
 
+    def test_tower_demo_does_not_require_tmux(self):
+        with patch.object(cli, "_render", return_value=0) as render, patch.object(cli, "_tmux") as tmux:
+            self.assertEqual(cli.main(["--demo", "--tower"]), 0)
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", demo=True, tower=True)
+        tmux.assert_not_called()
+
+    def test_tower_reads_file_and_internal_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "history.txt"
+            source.write_text("old output\nlatest output\n")
+            for argument in ("--file", "--snapshot"):
+                with self.subTest(argument=argument), patch.object(cli, "_render", return_value=0) as render:
+                    self.assertEqual(cli.main([argument, str(source), "--tower"]), 0)
+                    render.assert_called_once_with("old output\nlatest output\n", "history.txt", tower=True)
+
+    def test_tower_passes_through_tmux_launch(self):
+        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+            self.assertEqual(cli.main(["--tower", "--pane", "%7", "--gravity", "off"]), 0)
+        launch.assert_called_once_with("%7", None, "terminal", tower=True)
+
+    def test_tower_rejects_incompatible_options_before_launch(self):
+        for arguments in (["--doctor"], ["--session"], ["--challenge"], ["--gravity", "on"]):
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()), patch.object(cli, "_tmux") as tmux, patch.object(cli, "_render") as render:
+                with self.assertRaises(SystemExit) as error:
+                    cli.main(["--tower", *arguments])
+                self.assertEqual(error.exception.code, 2)
+                tmux.assert_not_called()
+                render.assert_not_called()
+
+    def test_render_passes_tower_to_ui(self):
+        with patch.object(cli.sys.stdin, "isatty", return_value=True), patch.object(cli.sys.stdout, "isatty", return_value=True), patch("terminal_smash.ui.run") as run:
+            self.assertEqual(cli._render("history", "demo", tower=True, demo=True), 0)
+        run.assert_called_once_with("history", label="demo", tower=True, demo=True)
+
+    def test_tower_popup_captures_history_and_keeps_private_snapshot(self):
+        self._check_popup(fail=False, tower=True)
+
+    def test_tower_popup_failure_removes_history_snapshot(self):
+        self._check_popup(fail=True, tower=True)
+
+    def test_tower_rejects_oversized_history_before_creating_snapshot(self):
+        # The limit applies to encoded bytes, including multibyte terminal text.
+        with patch.dict(os.environ, {"TMUX": "socket", "TMUX_PANE": "%0"}), patch.object(cli, "MAX_FILE_BYTES", 4), patch.object(cli, "_tmux", side_effect=[completed("tmux 3.4"), completed("ééé")]) as tmux, patch.object(cli.tempfile, "TemporaryDirectory") as temporary:
+            with self.assertRaisesRegex(cli.UserError, "history is too large.*2 MiB"):
+                cli._launch_popup(None, None, "terminal", tower=True)
+            self.assertEqual(tmux.call_count, 2)
+            temporary.assert_not_called()
+
+    def test_tower_accepts_snapshot_at_exact_byte_limit(self):
+        source_bytes = len("\x1b[31mREAL terminal output\x1b[0m\n".encode("utf-8"))
+        with patch.object(cli, "MAX_FILE_BYTES", source_bytes):
+            self._check_popup(fail=False, tower=True)
+
     def test_gravity_on_reaches_demo_ui_and_popup(self):
         with patch.object(cli, "_render", return_value=0) as render:
             self.assertEqual(cli.main(["--demo", "--gravity", "on"]), 0)
@@ -134,7 +187,7 @@ class CliTests(unittest.TestCase):
     def test_snapshot_is_removed_after_popup_error(self):
         self._check_popup(fail=True)
 
-    def _check_popup(self, fail, challenge=False, falling_enabled=False):
+    def _check_popup(self, fail, challenge=False, falling_enabled=False, tower=False):
         real_temporary_directory = tempfile.TemporaryDirectory
         with real_temporary_directory(prefix="smash tests '$ ") as directory:
             root = Path(directory)
@@ -148,14 +201,14 @@ class CliTests(unittest.TestCase):
                 if arguments == ["-V"]:
                     return completed("tmux 3.4\n")
                 if arguments[0] == "capture-pane":
-                    self.assertEqual(arguments, ["capture-pane", "-p", "-e", "-t", "%7"])
+                    self.assertEqual(arguments, ["capture-pane", "-p", "-e", "-t", "%7"] + (["-S", "-"] if tower else []))
                     return completed(source)
                 self.assertEqual(arguments[:10], ["display-popup", "-E", "-B", "-w", "100%", "-h", "100%", "-t", "%7", "-c"])
                 self.assertEqual(arguments[10], "/dev/pts/123")
                 shell = shlex.split(arguments[-1])
                 self.assertEqual(shell[0], str(root / "terminal-smash"))
                 self.assertEqual(shell[1], "--snapshot")
-                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []) + (["--gravity", "on"] if falling_enabled else []))
+                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []) + (["--tower"] if tower else []) + (["--gravity", "on"] if falling_enabled else []))
                 snapshot = Path(shell[2])
                 snapshot_paths.append(snapshot)
                 self.assertEqual(snapshot.read_text(), source)
@@ -168,9 +221,9 @@ class CliTests(unittest.TestCase):
             with patch.dict(os.environ, {"TMUX": "socket,1,0", "TMUX_PANE": "%2"}), patch.object(cli, "__file__", str(root / "terminal_smash" / "cli.py")), patch.object(cli, "_tmux", side_effect=mock_tmux), patch.object(cli.tempfile, "TemporaryDirectory", side_effect=lambda **kw: real_temporary_directory(dir=root, **kw)):
                 if fail:
                     with self.assertRaisesRegex(cli.UserError, "popup failed"):
-                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled)
+                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled, tower=tower)
                 else:
-                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled), 0)
+                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge, falling_enabled=falling_enabled, tower=tower), 0)
             self.assertEqual([command[0] for command in seen], ["-V", "capture-pane", "display-popup"])
             self.assertEqual(len(snapshot_paths), 1)
             self.assertFalse(snapshot_paths[0].parent.exists())

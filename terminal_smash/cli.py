@@ -50,7 +50,7 @@ def _tmux_version() -> str:
     return version
 
 
-def _render(text: str, label: str, *, challenge: bool = False,
+def _render(text: str, label: str, *, challenge: bool = False, tower: bool = False,
             falling_enabled: bool = False, demo: bool = False) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise UserError("The game requires an interactive terminal. Run it in a WSL terminal window.")
@@ -63,6 +63,8 @@ def _render(text: str, label: str, *, challenge: bool = False,
         options = {}
         if challenge:
             options['challenge'] = True
+        if tower:
+            options['tower'] = True
         if falling_enabled:
             options['falling_enabled'] = True
         if demo:
@@ -86,6 +88,7 @@ def _read_file(path: Path) -> str:
 
 def _launch_popup(
     pane: str | None, client: str | None, label: str, *, challenge: bool = False,
+    tower: bool = False,
     falling_enabled: bool = False
 ) -> int:
     if not os.environ.get("TMUX"):
@@ -104,7 +107,12 @@ def _launch_popup(
         raise UserError("Use a tmux pane ID, such as %0 (check with: tmux list-panes).")
 
     # Capture before displaying the popup: the original pane continues to exist.
-    captured = _tmux(["capture-pane", "-p", "-e", "-t", target]).stdout
+    capture_arguments = ["capture-pane", "-p", "-e", "-t", target]
+    if tower:
+        capture_arguments.extend(["-S", "-"])
+    captured = _tmux(capture_arguments).stdout
+    if tower and len(captured.encode("utf-8")) > MAX_FILE_BYTES:
+        raise UserError("Terminal history is too large. The maximum snapshot size is 2 MiB.")
     launcher = Path(__file__).resolve().parent.parent / "terminal-smash"
     if not launcher.is_file():
         raise UserError(f"Launcher not found: {launcher}. Run install.sh again.")
@@ -118,6 +126,8 @@ def _launch_popup(
         render_arguments = [str(launcher), "--snapshot", str(snapshot), "--label", label]
         if challenge:
             render_arguments.append("--challenge")
+        if tower:
+            render_arguments.append("--tower")
         if falling_enabled:
             render_arguments.extend(["--gravity", "on"])
         renderer = shlex.join(render_arguments)
@@ -162,7 +172,9 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--snapshot", type=Path, help=argparse.SUPPRESS)
     mode.add_argument("--doctor", action="store_true", help="check the environment")
     mode.add_argument("--session", action="store_true", help="create or attach to the tmux session named smash")
-    parser.add_argument("--challenge", action="store_true", help="play a 30-second survival challenge with local records")
+    game = parser.add_mutually_exclusive_group()
+    game.add_argument("--challenge", action="store_true", help="play a 30-second survival challenge with local records")
+    game.add_argument("--tower", action="store_true", help="climb to the beginning of the retained terminal history")
     parser.add_argument("--gravity", choices=("on", "off"), default=None,
                         help="falling damaged text: on or off (default)")
     parser.add_argument("--pane", metavar="ID", help="tmux pane ID, such as %%0")
@@ -178,9 +190,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--gravity requires a game: use --demo, --file or a tmux pane")
     if args.challenge and (args.doctor or args.session):
         parser.error("--challenge requires a game: use --demo, --file or a tmux pane")
+    if args.tower and (args.doctor or args.session):
+        parser.error("--tower requires a game: use --demo, --file or a tmux pane")
+    if args.tower and args.gravity == "on":
+        parser.error("--tower uses fixed platforms and cannot be combined with --gravity on")
     if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session)):
         parser.error("--pane and --client apply only to tmux pane capture")
     render_options = {"challenge": True} if args.challenge else {}
+    if args.tower:
+        render_options["tower"] = True
     if args.gravity == "on":
         render_options["falling_enabled"] = True
     try:

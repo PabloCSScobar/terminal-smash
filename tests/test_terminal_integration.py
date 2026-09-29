@@ -185,6 +185,112 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
+    def test_tower_cli_movement_pause_restart_resize_and_terminal_restoration(self):
+        # Observe the real CLI, curses loop and tower physics without replacing
+        # any input or movement method. The atomic snapshot avoids depending on
+        # ncurses' choice of abbreviated terminal redraw sequences.
+        child = (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "from terminal_smash import cli, ui\n"
+            "draw = ui._draw_tower\n"
+            "state = Path(os.environ['XDG_STATE_HOME']) / 'tower-state.json'\n"
+            "def observe(win, world, palette, label, help_open, help_page=0):\n"
+            "    draw(win, world, palette, label, help_open, help_page)\n"
+            "    rows, columns = win.getmaxyx()\n"
+            "    temporary = state.with_suffix('.tmp')\n"
+            "    temporary.write_text(json.dumps(dict(world=id(world), rows=rows, columns=columns, "
+            "x=world.player.x, y=world.player.y, elapsed=world.elapsed, progress=world.progress, "
+            "total=world.total_climb, help=help_open, finished=world.finished)))\n"
+            "    temporary.replace(state)\n"
+            "ui._draw_tower = observe\n"
+            "render = ui._draw\n"
+            "def repaint(win, *args, **kwargs):\n"
+            "    win.redrawwin()\n"
+            "    render(win, *args, **kwargs)\n"
+            "ui._draw = repaint\n"
+            "raise SystemExit(cli.main(['--demo', '--tower']))\n"
+        )
+        terminal = Terminal([sys.executable, "-c", child])
+        state_file = Path(terminal.state_directory.name) / "tower-state.json"
+
+        def tower_state(check):
+            def inspect():
+                terminal.pump(0.015)
+                if not state_file.exists():
+                    return None
+                state = json.loads(state_file.read_text())
+                return state if check(state) else None
+            return _eventually(inspect, timeout=3)
+
+        try:
+            terminal.until(b"SCROLLBACK TOWER")
+            terminal.until(b"CLIMBED")
+            running_mode = termios.tcgetattr(terminal.slave)
+            self.assertFalse(running_mode[3] & (termios.ECHO | termios.ICANON))
+            start = tower_state(lambda state: state["elapsed"] > 0.1)
+            self.assertGreater(start["total"], 30, "The demo must extend above the visible screen")
+
+            terminal.send(b"dw")
+            moved = tower_state(lambda state: state["x"] > start["x"] + 0.2
+                                and state["y"] < start["y"] - 0.2)
+            self.assertFalse(moved["finished"])
+            terminal.send(b"?")
+            paused = tower_state(lambda state: state["help"])
+            terminal.until(b"HELP")
+            terminal.send(b"aWd")
+            terminal.pump(0.25)
+            still_paused = tower_state(lambda state: state["help"])
+            for field in ("elapsed", "x", "y", "progress"):
+                self.assertEqual(still_paused[field], paused[field], f"Help must pause {field}")
+
+            # Keep help open so position changes would identify an unwanted
+            # tower rebuild rather than ordinary gravity during the resize.
+            offset = len(terminal.output)
+            terminal.resize(10, 50)
+            terminal.until(b"Resize to at least", after=offset)
+            terminal.resize(32, 120)
+            resized = tower_state(lambda state: state["rows"] == 32 and state["columns"] == 120)
+            for field in ("world", "elapsed", "y", "progress", "total"):
+                self.assertEqual(resized[field], paused[field], f"Resize must preserve {field}")
+            self.assertAlmostEqual(resized["x"] / 120, paused["x"] / 100)
+
+            terminal.send(b"?")
+            tower_state(lambda state: not state["help"] and state["elapsed"] > paused["elapsed"] + 0.1)
+            terminal.send(b"R?")
+            restarted = tower_state(lambda state: state["help"] and state["elapsed"] == 0)
+            self.assertEqual(restarted["progress"], 0)
+            self.assertFalse(restarted["finished"])
+            self.assertEqual(restarted["total"], start["total"])
+
+            offset = len(terminal.output)
+            terminal.send(b"?V")
+            terminal.until(b"FREE PLAY", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"v")
+            terminal.until(b"SCROLLBACK TOWER", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"C")
+            terminal.until(b"CHALLENGE", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"V")
+            terminal.until(b"SCROLLBACK TOWER", after=offset)
+
+            terminal.send(b"\x1b")
+            self.assertEqual(terminal.finish(), 0)
+            output = bytes(terminal.output)
+            self.assertNotIn(b"Traceback", output)
+            self.assertIn(b"\x1b[?1049h", output)
+            self.assertIn(b"\x1b[?1049l", output)
+            self.assertGreater(output.rfind(b"\x1b[?1049l"), output.find(b"\x1b[?1049h"))
+            restored = termios.tcgetattr(terminal.slave)
+            self.assertEqual(
+                restored[3] & (termios.ECHO | termios.ICANON),
+                terminal.original_mode[3] & (termios.ECHO | termios.ICANON),
+            )
+        finally:
+            terminal.close()
+
     def test_gravity_and_automatic_grip_survive_reset_challenge_and_resize(self):
         # Full repaint makes the actual PTY status readable as complete text;
         # ncurses normally emits only the changed "N" / "FF" bytes on toggles.
@@ -532,6 +638,80 @@ class TerminalIntegrationTests(unittest.TestCase):
             self.assertNotIn(b"Traceback", bytes(terminal.output))
         finally:
             terminal.close()
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+    def test_tower_captures_oldest_real_tmux_history_without_changing_pane(self):
+        version = subprocess.run(["tmux", "-V"], text=True, capture_output=True, check=True).stdout
+        parsed = re.search(r"tmux\s+(\d+)\.(\d+)", version)
+        if not parsed or tuple(map(int, parsed.groups())) < (3, 4):
+            self.skipTest("The popup launcher requires tmux >= 3.4")
+
+        with tempfile.TemporaryDirectory(prefix="smash-tower-history-") as temporary:
+            directory = Path(temporary)
+            socket = directory / "tmux.sock"
+            fixture = directory / "fixture.py"
+            fixture.write_text(
+                "import time\n"
+                "print('TOWER_OLDEST_RETAINED_58291', flush=True)\n"
+                "for row in range(160):\n"
+                "    print(f'History row {row:03d}: completed terminal command', flush=True)\n"
+                "print('TOWER_NEWEST_VISIBLE_73502', flush=True)\n"
+                "while True: time.sleep(1)\n",
+                encoding="utf-8",
+            )
+            env = _environment(directory / "state")
+
+            def tmux(*arguments: str, check: bool = True):
+                return subprocess.run(
+                    ["tmux", "-S", str(socket), *arguments], env=env, text=True,
+                    capture_output=True, check=check, timeout=5,
+                )
+
+            try:
+                tmux("-f", "/dev/null", "new-session", "-d", "-x", "100", "-y", "20",
+                     "-s", "history", shlex.join([sys.executable, "-u", str(fixture)]))
+                pane = tmux("display-message", "-p", "-t", "history", "#{pane_id}").stdout.strip()
+                _eventually(lambda: "TOWER_NEWEST_VISIBLE_73502" in
+                            tmux("capture-pane", "-p", "-t", pane).stdout)
+                visible = tmux("capture-pane", "-p", "-e", "-t", pane).stdout
+                before = tmux("capture-pane", "-p", "-e", "-t", pane, "-S", "-").stdout
+                self.assertNotIn("TOWER_OLDEST_RETAINED_58291", visible)
+                self.assertTrue(before.startswith("TOWER_OLDEST_RETAINED_58291\n"))
+                server_env = tmux("display-message", "-p", "-t", pane, "#{socket_path},#{pid},0").stdout.strip()
+                observed_path = directory / "captured.json"
+                # Run the real CLI and tmux capture. Only the last popup launch
+                # is intercepted so we can inspect the private snapshot before
+                # the production context manager removes it.
+                child = (
+                    "import json, shlex, subprocess, sys\n"
+                    "from pathlib import Path\n"
+                    "from terminal_smash import cli\n"
+                    "bridge = cli._tmux\n"
+                    "def inspect(arguments, **kwargs):\n"
+                    "    if arguments[0] != 'display-popup': return bridge(arguments, **kwargs)\n"
+                    "    renderer = shlex.split(arguments[-1])\n"
+                    "    snapshot = Path(renderer[renderer.index('--snapshot') + 1])\n"
+                    "    Path(sys.argv[1]).write_text(json.dumps(dict(text=snapshot.read_text(), "
+                    "snapshot=str(snapshot), renderer=renderer, mode=snapshot.stat().st_mode & 0o777)))\n"
+                    "    return subprocess.CompletedProcess(arguments, 0, '', '')\n"
+                    "cli._tmux = inspect\n"
+                    "raise SystemExit(cli.main(['--tower', '--pane', sys.argv[2]]))\n"
+                )
+                result = subprocess.run(
+                    [sys.executable, "-c", child, str(observed_path), pane], cwd=ROOT,
+                    env=dict(env, TMUX=server_env, TMUX_PANE=pane), text=True,
+                    capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                observed = json.loads(observed_path.read_text())
+                self.assertEqual(observed["text"], before)
+                self.assertIn("--tower", observed["renderer"])
+                self.assertEqual(observed["mode"], 0o600)
+                self.assertFalse(Path(observed["snapshot"]).exists())
+                self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane, "-S", "-").stdout, before)
+                self.assertEqual(tmux("display-message", "-p", "-t", pane, "#{pane_dead}").stdout.strip(), "0")
+            finally:
+                tmux("kill-server", check=False)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
     def test_real_popup_preserves_pane_and_running_process(self):

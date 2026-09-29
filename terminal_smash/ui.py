@@ -9,9 +9,10 @@ import sys
 import time
 
 from .capture import Style, parse_capture
-from .demo import build_demo
+from .demo import build_demo, build_tower_demo
 from .model import World
 from .records import arena_key, load_best, save_best
+from .tower import TowerWorld
 
 
 FRAME_INTERVAL = 1 / 90
@@ -101,6 +102,7 @@ HELP_LINES = [
     'S / down          descend wall / drop / release',
     'T / Home          return to the top',
     'C                 switch FREE / 30s CHALLENGE',
+    'V                 tower using the loaded text',
     'G                 falling ON/OFF (restarts)',
     'R                 restart the current mode',
     '?                 close help (game is paused)',
@@ -116,13 +118,35 @@ HELP_LINES = [
     'The underlying session keeps running.',
 ]
 
+TOWER_HELP_LINES = [
+    'Climb from the newest output to the oldest.',
+    'Bright text and cyan bridges are platforms.',
+    'Dim text is the history behind your route.',
+    'A / D or arrows   run / steer in the air',
+    'Space / W / up    jump (twice in the air)',
+    'S / down          drop through a platform',
+    'Keep climbing: the camera only follows up.',
+    'Falling below the screen ends the attempt.',
+    'Reach the gold SUMMIT platform to win.',
+    'R                 retry from the bottom',
+    'V / C             free play / challenge',
+    '?                 close help (timer paused)',
+    'Esc / Q           return to terminal',
+    '',
+    'No wall grip, attacks or teleport in Tower.',
+    'For full tmux history, launch with --tower.',
+    'The summit is the oldest retained output.',
+    'Only a copy is used; your shell keeps running.',
+]
 
-def _help(win, palette: Palette, page: int = 0) -> None:
+
+def _help(win, palette: Palette, page: int = 0, *, tower: bool = False) -> None:
     rows, cols = win.getmaxyx()
+    help_lines = TOWER_HELP_LINES if tower else HELP_LINES
     capacity = max(1, rows - 6)
-    pages = max(1, math.ceil(len(HELP_LINES) / capacity))
+    pages = max(1, math.ceil(len(help_lines) / capacity))
     page = page % pages
-    lines = HELP_LINES[page * capacity:(page + 1) * capacity]
+    lines = help_lines[page * capacity:(page + 1) * capacity]
     width = min(56, cols - 2)
     height = len(lines) + 4
     left, top = (cols - width) // 2, (rows - height) // 2
@@ -308,6 +332,9 @@ def _round_over(win, world: World, palette: Palette, record: RoundRecord | None)
 def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
           terrain: TerrainLayer | None = None, record: RoundRecord | None = None,
           help_page: int = 0) -> None:
+    if isinstance(world, TowerWorld):
+        _draw_tower(win, world, palette, label, help_open, help_page)
+        return
     if terrain is None:
         terrain = TerrainLayer()
     terrain.blit(win, world, palette)
@@ -391,9 +418,9 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
         _put(win, max(3, rows // 2), max(0, (cols - 37) // 2), 'ALL SMASHED! R rebuild / C challenge', yellow)
     elif not world.total:
         _put(win, max(3, rows // 2), 1, 'Empty snapshot. Esc, run a command, retry.', dim)
-    hint = ' A/D run  W climb  SPACE jump  J hit K blast  L dash X slam C 30s ? ESC '
+    hint = ' A/D run  W climb  SPACE jump  J hit K blast  L dash X slam C 30s V tower ? ESC '
     if cols < len(hint):
-        hint = ' A/D W climb SPACE J/K L X C ? ESC '
+        hint = ' A/D W SPACE J/K L X C V tower ? ESC '
     _put(win, rows - 2, 0, hint, cyan)
     blast = 'recharging' if world.time < world.next_blast else 'ready'
     dash = 'recharging' if world.time < world.next_dash else 'ready'
@@ -410,9 +437,94 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
     curses.doupdate()
 
 
+def _tower_time(seconds: float) -> str:
+    minutes, seconds = divmod(seconds, 60)
+    return f'{int(minutes):02d}:{seconds:04.1f}'
+
+
+def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
+                help_open: bool, help_page: int = 0) -> None:
+    """Render only the camera's rows, keeping history distinct from footholds."""
+    win.erase()
+    rows, cols = win.getmaxyx()
+    cyan = palette.attr(Style(fg=51, bold=True))
+    gold = palette.attr(Style(fg=220, bold=True))
+    dim = palette.attr(Style(fg=244))
+    platforms = {platform.row: platform for platform in world.visible_platforms()}
+    cells = list(world.visible_cells())
+
+    def scene(row, x, text, width, attr):
+        y = row - world.camera_y + 2
+        if 2 <= y < rows - 3 and 0 <= x and x + width <= cols:
+            _write_run(win, y, x, text, attr)
+
+    # Skip entire wide glyphs covered by a generated bridge, including its
+    # boundaries, so replacing text can never leave half of a character.
+    background = [cell for cell in cells
+                  if not ((platform := platforms.get(cell.y)) and platform.synthetic
+                          and cell.x < platform.right and cell.x + cell.width > platform.left)]
+    for row, x, text, width, style in _text_runs(background):
+        scene(row, x, text, width, palette.attr(style) | curses.A_DIM)
+    for platform in platforms.values():
+        attr = gold if platform.row == world.summit_row else cyan
+        if platform.synthetic:
+            width = platform.right - platform.left
+            bridge = '[' + '=' * max(0, width - 2) + ']'
+            if platform.row == world.summit_row and width >= 8:
+                bridge = ' SUMMIT '.center(width, '=')
+            scene(platform.row, platform.left, bridge[:width], width, attr)
+        else:
+            selected = [cell for cell in cells if cell.y == platform.row
+                        and platform.left <= cell.x and cell.x + cell.width <= platform.right]
+            for row, x, text, width, _ in _text_runs(selected):
+                scene(row, x, text, width, attr | curses.A_UNDERLINE)
+
+    p = world.player
+    arms = '\\|/' if p.vy < 0 else '/|\\'
+    legs = '< >' if not p.grounded else ('/ \\' if int(world.time * 12) % 2 else ' | ')
+    for dx, dy, glyph in ((0, -2, 'O'), (-1, -1, arms), (-1, 0, legs)):
+        scene(round(p.y) + dy, max(0, min(cols - len(glyph), round(p.x) + dx)),
+              glyph, len(glyph), gold)
+
+    _put(win, 0, 0, ' SCROLLBACK TOWER ', palette.attr(Style(fg=16, bg=51, bold=True)))
+    timer = 'TIME ' + _tower_time(world.elapsed)
+    _put(win, 0, cols - len(timer) - 1, timer, gold)
+    total, progress = int(world.total_climb), world.score
+    percent = min(100, progress * 100 // max(1, total))
+    stats = f'CLIMBED {progress}/{total} rows  {percent}%'
+    _put(win, 1, 0, stats, cyan)
+    if cols > len(stats) + len(label) + 3:
+        _put(win, 1, cols - len(label) - 1, label, dim)
+    _put(win, rows - 3, 0, '-' * cols, dim)
+    _put(win, rows - 2, 0, ' A/D move  SPACE/W jump  S drop  R retry', cyan)
+    _put(win, rows - 1, 0, ' V free  C challenge  ? help  Esc exit', dim)
+
+    if world.finished:
+        width = min(52, cols - 2)
+        left, top = (cols - width) // 2, max(2, (rows - 8) // 2)
+        attr = palette.attr(Style(fg=15, bg=17, bold=True))
+        for row in range(7):
+            _put(win, top + row, left, ' ' * width, attr)
+        lines = [
+            'SUMMIT REACHED!' if world.finish_reason == 'summit' else 'YOU FELL BELOW THE SCREEN!',
+            f'Climbed: {progress}/{total} rows ({percent}%)',
+            f'Time: {_tower_time(world.elapsed)}   Jumps: {world.jump_count}',
+            'The oldest retained output is your summit.',
+            '[R] retry  [V] free play  [Esc] return',
+        ]
+        for row, line in enumerate(lines):
+            _put(win, top + 1 + row, left + 2, line[:width - 4], attr)
+    if help_open:
+        _help(win, palette, help_page, tower=True)
+    win.noutrefresh()
+    curses.doupdate()
+
+
 def _new_world(text: str, rows: int, cols: int, challenge: bool,
                falling_enabled: bool = False, *, demo: bool = False,
-               grip_enabled: bool = True) -> World:
+               grip_enabled: bool = True, tower: bool = False) -> World | TowerWorld:
+    if tower:
+        return TowerWorld(build_tower_demo(cols) if demo else text, cols, rows - 5)
     if demo:
         text = build_demo(cols, rows - 5)
     content_rows = text.rstrip('\r\n').count('\n') + 1
@@ -425,7 +537,7 @@ def _new_world(text: str, rows: int, cols: int, challenge: bool,
 
 
 def _main(win, text: str, label: str, challenge: bool = False,
-          falling_enabled: bool = False, demo: bool = False) -> None:
+          falling_enabled: bool = False, demo: bool = False, tower: bool = False) -> None:
     try:
         curses.curs_set(0)
     except curses.error:
@@ -449,8 +561,12 @@ def _main(win, text: str, label: str, challenge: bool = False,
         rebuilt = False
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
-            world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
-            record = RoundRecord(world)
+            if tower and isinstance(world, TowerWorld):
+                world.resize(cols, rows - 5)
+            else:
+                world = _new_world(text, rows, cols, challenge, falling_enabled,
+                                   demo=demo, tower=tower)
+                record = None if tower else RoundRecord(world)
             rebuilt = True
         # Advance the old state before accepting new actions, so a key arriving
         # after the deadline cannot score after a slow/stalled terminal frame.
@@ -459,7 +575,8 @@ def _main(win, text: str, label: str, challenge: bool = False,
         last = now
         if playable and world is not None and not help_open:
             world.update(dt)
-            record.finish(world)
+            if record:
+                record.finish(world)
         for _ in range(256):
             key = win.getch()
             if key == -1:
@@ -479,19 +596,36 @@ def _main(win, text: str, label: str, challenge: bool = False,
                     help_page -= 1
                 continue
             if key in (ord('c'), ord('C')):
+                tower = False
                 challenge = not challenge
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
-            elif key in (ord('g'), ord('G')):
+            elif key in (ord('v'), ord('V')):
+                tower = not tower
+                challenge = False
+                world = _new_world(text, rows, cols, challenge, falling_enabled,
+                                   demo=demo, tower=tower)
+                record = None if tower else RoundRecord(world)
+                rebuilt = True
+            elif key in (ord('g'), ord('G')) and not tower:
                 falling_enabled = not falling_enabled
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
                 world.reset()
-                record = RoundRecord(world)
+                record = None if tower else RoundRecord(world)
                 rebuilt = True
+            elif tower:
+                if key in (ord('a'), ord('A'), curses.KEY_LEFT):
+                    world.move(-1)
+                elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
+                    world.move(1)
+                elif key in (ord('w'), ord('W'), curses.KEY_UP, ord(' ')):
+                    world.jump()
+                elif key in (ord('s'), ord('S'), curses.KEY_DOWN):
+                    world.drop()
             elif key in (ord('a'), ord('A'), curses.KEY_LEFT):
                 world.move(-1)
             elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
@@ -514,7 +648,8 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 world.return_to_top()
             # Save a finished round before another queued key can restart
             # the scene, switch modes or exit in this same input batch.
-            record.finish(world)
+            if record:
+                record.finish(world)
         if rebuilt:
             last = time.monotonic()
         if not playable:
@@ -522,17 +657,18 @@ def _main(win, text: str, label: str, challenge: bool = False,
             _put(win, 0, 0, 'Resize to at least 44 x 14. Esc exits.')
             win.refresh()
         elif world is not None:
-            record.finish(world)
+            if record:
+                record.finish(world)
             _draw(win, world, palette, label, help_open, terrain, record, help_page)
         wait = max(0, FRAME_INTERVAL - (time.monotonic() - start))
         select.select([sys.stdin], [], [], wait)
 
 
 def run(text: str, label: str = 'terminal', *, challenge: bool = False,
-        falling_enabled: bool = False, demo: bool = False) -> None:
+        falling_enabled: bool = False, demo: bool = False, tower: bool = False) -> None:
 
     locale.setlocale(locale.LC_ALL, '')
     try:
-        curses.wrapper(_main, text, label, challenge, falling_enabled, demo)
+        curses.wrapper(_main, text, label, challenge, falling_enabled, demo, tower)
     except KeyboardInterrupt:
         pass
