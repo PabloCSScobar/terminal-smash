@@ -1,4 +1,4 @@
-"""Infer a bounded horizontal hold from ordinary terminal key presses.
+"""Horizontal movement from explicit key events or legacy repeat pulses.
 
 Classic curses has no key-release events. A first press is a short step; only
 observed rapid repeats extend it into a run. The initial system repeat delay
@@ -48,6 +48,44 @@ class HorizontalInput:
         self.expires_at = 0.0
         self.last_press_at = None
         self.last_direction = 0
+        if world is not None:
+            world.move_until = world.time
+            world.player.vx = 0.0
+
+
+class HeldHorizontalInput:
+    """Track explicit presses/releases; the most recently pressed key wins."""
+
+    def __init__(self) -> None:
+        self._held: dict[int, int] = {}
+        self._moving = False
+
+    @property
+    def direction(self) -> int:
+        return next(reversed(self._held.values()), 0)
+
+    def press(self, key: int, direction: int) -> None:
+        # Repeated presses for an already-held key cannot steal priority.
+        if key not in self._held:
+            self._held[key] = -1 if direction < 0 else 1
+
+    def release(self, key: int) -> None:
+        self._held.pop(key, None)
+
+    def apply(self, world, now: float) -> None:
+        if self.direction:
+            world.move(self.direction)
+            self._moving = True
+        elif self._moving:
+            world.move_until = world.time
+            if (world.player.grounded and world.time >= getattr(world, 'dash_until', 0.0)
+                    and not getattr(world, 'slamming', False) and not getattr(world, 'grip_surface', '')):
+                world.player.vx = 0.0
+            self._moving = False
+
+    def clear(self, world=None) -> None:
+        self._held.clear()
+        self._moving = False
         if world is not None:
             world.move_until = world.time
             world.player.vx = 0.0

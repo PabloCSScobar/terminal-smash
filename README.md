@@ -45,6 +45,10 @@ terminal-smash --demo --tower  # Try a complete tower without tmux
 
 Inside tmux, press **Ctrl+b**, release it, then press **Shift+s** to play with the visible text or **Shift+t** to open Tower with the pane's full retained history. Press **Esc** to return to your shell. With a custom tmux prefix, use it instead of Ctrl+b.
 
+Tower temporarily detaches only the client that launched it and runs directly in that terminal. Esc reconnects it to the same tmux session; the session and its programs keep running. This lets a compatible terminal send key releases to the game. Use `terminal-smash --tower --popup` for the original tmux popup, or add `--direct` to free play/challenge to use the direct launcher there too. When several clients show the same pane, use the shortcut in the intended client or supply its exact `--client` name.
+
+Direct launch refuses to detach if tmux is configured to destroy unattached sessions or exit when unattached. Use `--popup` with those configurations.
+
 **Gravity is OFF by default:** untouched letters stay in place. Press **G** to change it and restart the scene, or launch with `--gravity on`.
 
 Press **C** for a 30-second challenge with respawning `ERROR` enemies and local high scores. You have **5 HP**; enemy contact costs one. The round ends when time or health runs out. You can also start with `terminal-smash --challenge` inside tmux, or `terminal-smash --demo --challenge`.
@@ -59,7 +63,19 @@ Use **A/D** or the arrow keys to steer, **Space/W/↑** to jump twice, and **S/�
 
 The chase adapts to the window height and slows while you cross unusually wide footholds. Jump routes leave room for the camera to move during landing. Help and a clipped or undersized window pause the chase along with the game.
 
-A tap of A/D or an arrow gives a short step of about 60 ms; rapid repeats produce continuous running. Repeated input expires within 60–120 ms of the last repeat, and a grounded player stops without an extra slide. Ordinary terminals do not report key releases, so a pause before the keyboard's first repeat can still occur. Airborne momentum is preserved.
+With a compatible terminal, A/D and the arrows move for as long as you hold them, including the interval before the first keyboard repeat. Releasing stops grounded movement immediately; airborne momentum is preserved. If two directions are held, the most recently pressed wins, and releasing it returns to the other direction. Losing focus clears held keys and opens help to pause the game; press **?** after returning to resume.
+
+Precise movement requires the terminal to confirm the [Kitty Keyboard Protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) with press/repeat/release and all-key reporting. On Windows, [Windows Terminal Preview 1.25](https://devblogs.microsoft.com/commandline/windows-terminal-preview-1-25-release/) adds this protocol; stable 1.24 does not provide it. No keyboard-repeat settings need to change. The game detects support at launch and restores terminal modes on exit.
+
+To check your terminal, run this **outside tmux/screen**:
+
+```bash
+terminal-smash --keyboard-check
+```
+
+Hold an arrow, release it, then tap it. The check should show `Press/release reporting enabled`, keep the arrow in `DOWN` while held, and show a `release` event when let go. Esc exits. The check does not save key history. Demo/file games launched outside tmux also negotiate this input automatically.
+
+On terminals without confirmed support, or inside a legacy popup, the game falls back to short 60 ms steps and 60–120 ms repeat windows. The initial system-repeat pause remains in this fallback. A tmux upgrade or `extended-keys` setting alone does not establish key-release support; use the direct launch path.
 
 **R** retries the same route from the bottom and **?** pauses the game and timer. A new launch chooses a new route. Resizing preserves your attempt; if narrowing the window clips text needed by the route, the game pauses until you widen it. Wall grips, attacks, falling text and the top teleport are disabled in Tower. **V** switches between Tower and free play; **C** enters challenge mode. Switching modes starts a new attempt. The V shortcut uses the text already loaded; launch with `--tower` to capture the full tmux history rather than only the visible screen.
 

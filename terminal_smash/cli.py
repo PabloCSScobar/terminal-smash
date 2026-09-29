@@ -170,11 +170,16 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--demo", action="store_true", help="play the colorful demo without tmux")
     mode.add_argument("--file", type=Path, metavar="FILE", help="play with text from a file, without tmux")
     mode.add_argument("--snapshot", type=Path, help=argparse.SUPPRESS)
+    mode.add_argument("--keyboard-check", action="store_true", help="check whether this terminal reports key press and release events")
+    mode.add_argument("--direct-handoff", nargs=3, help=argparse.SUPPRESS)
     mode.add_argument("--doctor", action="store_true", help="check the environment")
     mode.add_argument("--session", action="store_true", help="create or attach to the tmux session named smash")
     game = parser.add_mutually_exclusive_group()
     game.add_argument("--challenge", action="store_true", help="play a 30-second survival challenge with local records")
     game.add_argument("--tower", action="store_true", help="climb to the beginning of the retained terminal history")
+    display = parser.add_mutually_exclusive_group()
+    display.add_argument("--direct", action="store_true", help="run on the original terminal, temporarily detaching this tmux client")
+    display.add_argument("--popup", action="store_true", help="use the legacy tmux popup instead of direct Tower input")
     parser.add_argument("--gravity", choices=("on", "off"), default=None,
                         help="falling damaged text: on or off (default)")
     parser.add_argument("--pane", metavar="ID", help="tmux pane ID, such as %%0")
@@ -186,15 +191,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.gravity is not None and (args.doctor or args.session):
+    non_game = args.doctor or args.session or args.keyboard_check or args.direct_handoff
+    if (args.direct or args.popup) and non_game:
+        parser.error("--direct and --popup require a game")
+    if args.gravity is not None and non_game:
         parser.error("--gravity requires a game: use --demo, --file or a tmux pane")
-    if args.challenge and (args.doctor or args.session):
+    if args.challenge and non_game:
         parser.error("--challenge requires a game: use --demo, --file or a tmux pane")
-    if args.tower and (args.doctor or args.session):
+    if args.tower and non_game:
         parser.error("--tower requires a game: use --demo, --file or a tmux pane")
     if args.tower and args.gravity == "on":
         parser.error("--tower uses fixed platforms and cannot be combined with --gravity on")
-    if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session)):
+    if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session, args.keyboard_check, args.direct_handoff)):
         parser.error("--pane and --client apply only to tmux pane capture")
     render_options = {"challenge": True} if args.challenge else {}
     if args.tower:
@@ -202,6 +210,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.gravity == "on":
         render_options["falling_enabled"] = True
     try:
+        if args.direct_handoff:
+            from .direct import supervise
+            directory, socket, session = args.direct_handoff
+            return supervise(Path(directory), socket, session)
+        if args.keyboard_check:
+            if not sys.stdin.isatty() or not sys.stdout.isatty():
+                raise UserError("The keyboard check requires an interactive terminal.")
+            try:
+                import curses
+                from .keyboard_check import run
+            except ImportError as exc:
+                raise UserError("The curses module is missing. Run with Python 3 on Linux/WSL.") from exc
+            try:
+                return run()
+            except curses.error as exc:
+                raise UserError(f"Cannot initialize the terminal screen: {exc}") from exc
         if args.doctor:
             return _doctor()
         if args.session:
@@ -215,6 +239,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         source = args.file or args.snapshot
         if source is not None:
             return _render(_read_file(source), args.label or source.name, **render_options)
+        if args.direct or (args.tower and not args.popup):
+            from .direct import launch
+            return launch(args.pane, args.client, args.label or "terminal", **render_options)
         return _launch_popup(args.pane, args.client, args.label or "terminal", **render_options)
     except KeyboardInterrupt:
         return 130

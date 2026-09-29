@@ -1,7 +1,7 @@
 """Key-repeat timing against real physics, without a terminal key-up protocol."""
 import unittest
 
-from terminal_smash.input import HorizontalInput
+from terminal_smash.input import HeldHorizontalInput, HorizontalInput
 from terminal_smash.model import World
 from terminal_smash.tower import TowerWorld
 
@@ -158,6 +158,89 @@ class HorizontalInputTests(unittest.TestCase):
         world.update(0.05)
         self.assertAlmostEqual(world.player.x - previous_x, 5.5)
         self.assertEqual(world.player.vx, 110)
+
+
+class HeldHorizontalInputTests(unittest.TestCase):
+    def setUp(self):
+        self.world = TowerWorld('application output\n' * 40, 240, 25, seed=1)
+        self.world.player.x = 120
+        self.input = HeldHorizontalInput()
+        self.now = 0.0
+
+    def advance(self, frames):
+        for _ in range(frames):
+            self.input.apply(self.world, self.now)
+            self.world.update(1 / 120)
+            self.now += 1 / 120
+
+    def test_hold_continues_without_any_repeat_for_more_than_seven_tenths(self):
+        self.input.press(ord('d'), 1)
+        self.advance(100)
+        self.assertAlmostEqual(self.world.player.x, 120 + 45 * 100 / 120)
+        self.assertEqual(self.world.player.vx, 45)
+
+    def test_tap_release_stops_immediately_on_floor(self):
+        self.input.press(ord('d'), 1)
+        self.advance(3)
+        position = self.world.player.x
+        self.input.release(ord('d'))
+        self.advance(100)
+        self.assertEqual(self.world.player.x, position)
+        self.assertEqual(self.world.player.vx, 0)
+
+    def test_latest_direction_wins_and_release_resumes_still_held_key(self):
+        self.input.press(ord('a'), -1)
+        self.advance(1)
+        self.input.press(ord('d'), 1)
+        self.advance(1)
+        self.assertEqual(self.world.player.vx, 45)
+        self.input.press(ord('a'), -1)
+        self.advance(1)
+        self.assertEqual(self.world.player.vx, 45, 'Repeated presses cannot steal priority')
+        self.input.release(ord('d'))
+        self.advance(1)
+        self.assertEqual(self.world.player.vx, -45)
+        self.input.release(ord('a'))
+        self.advance(1)
+        self.assertEqual(self.world.player.vx, 0)
+
+    def test_clear_for_focus_pause_or_resize_forgets_both_keys(self):
+        self.input.press(ord('a'), -1)
+        self.input.press(ord('d'), 1)
+        self.advance(2)
+        position = self.world.player.x
+        self.input.clear(self.world)
+        self.input.release(ord('d'))
+        self.advance(100)
+        self.assertEqual(self.world.player.x, position)
+        self.assertEqual(self.input.direction, 0)
+        self.input.press(ord('a'), -1)
+        self.advance(1)
+        self.assertLess(self.world.player.x, position)
+
+    def test_release_preserves_airborne_momentum(self):
+        self.input.press(ord('d'), 1)
+        self.advance(3)
+        self.world.jump()
+        self.advance(3)
+        self.input.release(ord('d'))
+        self.advance(12)
+        self.assertFalse(self.world.player.grounded)
+        self.assertEqual(self.world.player.vx, 45)
+
+    def test_release_cannot_cancel_an_active_grounded_dash(self):
+        world = World([], 120, 30)
+        world.player.x, world.player.y, world.player.grounded = 60, 28, True
+        self.input.press(ord('d'), 1)
+        self.input.apply(world, 0)
+        world.dash()
+        world.update(0.05)
+        self.input.release(ord('d'))
+        self.input.apply(world, 0.05)
+        self.assertEqual(world.player.vx, 110)
+        previous_x = world.player.x
+        world.update(0.05)
+        self.assertAlmostEqual(world.player.x - previous_x, 5.5)
 
 
 if __name__ == '__main__':

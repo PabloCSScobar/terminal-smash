@@ -5,12 +5,14 @@ import curses
 import locale
 import math
 import select
+import signal
 import sys
 import time
 
 from .capture import Style, parse_capture
 from .demo import build_demo, build_tower_demo
-from .input import HorizontalInput
+from .input import HeldHorizontalInput, HorizontalInput
+from .keyboard import KeyboardReader
 from .model import World
 from .records import arena_key, load_best, save_best
 from .tower import TowerWorld
@@ -581,8 +583,12 @@ def _main(win, text: str, label: str, challenge: bool = False,
     except curses.error:
         pass
     curses.set_escdelay(25)
-    win.keypad(True)
-    win.nodelay(True)
+    with KeyboardReader(win) as keyboard:
+        _play(win, keyboard, text, label, challenge, falling_enabled, demo, tower)
+
+
+def _play(win, keyboard, text: str, label: str, challenge: bool = False,
+          falling_enabled: bool = False, demo: bool = False, tower: bool = False) -> None:
     palette = Palette()
     terrain = TerrainLayer()
     world = None
@@ -590,6 +596,18 @@ def _main(win, text: str, label: str, challenge: bool = False,
     dimensions = None
     input_dimensions = None
     horizontal = HorizontalInput()
+    held = HeldHorizontalInput()
+    climbing: dict[int, int] = {}
+    focused = True
+    enhanced = keyboard.enhanced
+
+    def clear_input(world):
+        horizontal.clear(world)
+        held.clear(world)
+        climbing.clear()
+        if isinstance(world, World):
+            world._climb_until = world.time
+
     help_open = False
     help_page = 0
     last = time.monotonic()
@@ -600,7 +618,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
         playable = rows >= 14 and cols >= 44
         rebuilt = False
         if input_dimensions != (rows, cols):
-            horizontal.clear(world)
+            clear_input(world)
             input_dimensions = (rows, cols)
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
@@ -618,20 +636,51 @@ def _main(win, text: str, label: str, challenge: bool = False,
         last = now
         if playable and world is not None and not help_open:
             if world.finished or (tower and (world.empty or world.resize_blocked)):
-                horizontal.clear(world)
+                clear_input(world)
             else:
                 horizontal.apply(world, now)
+                held.apply(world, now)
+                if not tower and climbing and world.grip_surface in ('left', 'right'):
+                    direction = next(reversed(climbing.values()))
+                    if direction < 0:
+                        world.climb_up()
+                    else:
+                        world.climb_down()
             world.update(dt)
             if record:
                 record.finish(world)
-        for _ in range(256):
-            key = win.getch()
-            if key == -1:
-                break
+        events = keyboard.poll()
+        if enhanced != keyboard.enhanced:
+            clear_input(world)
+            enhanced = keyboard.enhanced
+        for event in events:
+            key = event.key
+            if event.kind == 'focus_out':
+                clear_input(world)
+                focused = False
+                help_open = True
+                help_page = 0
+                continue
+            if event.kind == 'focus_in':
+                focused = True
+                continue
+            if event.kind == 'release':
+                held.release(key)
+                climbing.pop(key, None)
+                if isinstance(world, World) and not climbing:
+                    world._climb_until = world.time
+                if world is not None:
+                    held.apply(world, time.monotonic())
+                continue
+            if event.kind == 'resize':
+                clear_input(world)
+                continue
+            if not focused or event.kind == 'repeat':
+                continue
             if key in (27, ord('q'), ord('Q'), 3):
                 return
             if key == ord('?'):
-                horizontal.clear(world)
+                clear_input(world)
                 help_open = not help_open
                 help_page = 0
                 continue
@@ -644,14 +693,14 @@ def _main(win, text: str, label: str, challenge: bool = False,
                     help_page -= 1
                 continue
             if key in (ord('c'), ord('C')):
-                horizontal.clear(world)
+                clear_input(world)
                 tower = False
                 challenge = not challenge
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('v'), ord('V')):
-                horizontal.clear(world)
+                clear_input(world)
                 tower = not tower
                 challenge = False
                 world = _new_world(text, rows, cols, challenge, falling_enabled,
@@ -659,32 +708,44 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 record = None if tower else RoundRecord(world)
                 rebuilt = True
             elif key in (ord('g'), ord('G')) and not tower:
-                horizontal.clear(world)
+                clear_input(world)
                 falling_enabled = not falling_enabled
                 world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
-                horizontal.clear(world)
+                clear_input(world)
                 world.reset()
                 record = None if tower else RoundRecord(world)
                 rebuilt = True
             elif key in (ord('a'), ord('A'), curses.KEY_LEFT):
-                horizontal.press(-1, time.monotonic())
-                horizontal.apply(world, time.monotonic())
+                if enhanced and event.enhanced:
+                    held.press(key, -1)
+                    held.apply(world, time.monotonic())
+                else:
+                    horizontal.press(-1, time.monotonic())
+                    horizontal.apply(world, time.monotonic())
             elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
-                horizontal.press(1, time.monotonic())
-                horizontal.apply(world, time.monotonic())
+                if enhanced and event.enhanced:
+                    held.press(key, 1)
+                    held.apply(world, time.monotonic())
+                else:
+                    horizontal.press(1, time.monotonic())
+                    horizontal.apply(world, time.monotonic())
             elif tower:
                 if key in (ord('w'), ord('W'), curses.KEY_UP, ord(' ')):
                     world.jump()
                 elif key in (ord('s'), ord('S'), curses.KEY_DOWN):
                     world.drop()
             elif key in (ord('w'), ord('W'), curses.KEY_UP):
+                if enhanced and event.enhanced:
+                    climbing[key] = -1
                 world.climb_up()
             elif key == ord(' '):
                 world.jump()
             elif key in (ord('s'), ord('S'), curses.KEY_DOWN):
+                if enhanced and event.enhanced:
+                    climbing[key] = 1
                 world.climb_down()
             elif key in (ord('j'), ord('J')):
                 world.punch()
@@ -695,7 +756,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
             elif key in (ord('x'), ord('X')):
                 world.slam()
             elif key in (ord('t'), ord('T'), curses.KEY_HOME):
-                horizontal.clear(world)
+                clear_input(world)
                 world.return_to_top()
             # Save a finished round before another queued key can restart
             # the scene, switch modes or exit in this same input batch.
@@ -717,9 +778,23 @@ def _main(win, text: str, label: str, challenge: bool = False,
 
 def run(text: str, label: str = 'terminal', *, challenge: bool = False,
         falling_enabled: bool = False, demo: bool = False, tower: bool = False) -> None:
+    _run_curses(_main, text, label, challenge, falling_enabled, demo, tower)
 
+
+def _run_curses(callback, *args):
     locale.setlocale(locale.LC_ALL, '')
+    # Unwind both the keyboard protocol and curses before the direct launcher
+    # reattaches tmux, including when its foreground process is terminated.
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    previous = {}
     try:
-        curses.wrapper(_main, text, label, challenge, falling_enabled, demo, tower)
+        for signum in (signal.SIGTERM, signal.SIGHUP):
+            previous[signum] = signal.signal(signum, interrupted)
+        return curses.wrapper(callback, *args)
     except KeyboardInterrupt:
         pass
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)

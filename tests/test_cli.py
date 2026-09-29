@@ -104,8 +104,8 @@ class CliTests(unittest.TestCase):
                     self.assertEqual(cli.main([argument, str(source), "--tower"]), 0)
                     render.assert_called_once_with("old output\nlatest output\n", "history.txt", tower=True)
 
-    def test_tower_passes_through_tmux_launch(self):
-        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+    def test_tower_defaults_to_direct_tmux_launch(self):
+        with patch("terminal_smash.direct.launch", return_value=0) as launch:
             self.assertEqual(cli.main(["--tower", "--pane", "%7", "--gravity", "off"]), 0)
         launch.assert_called_once_with("%7", None, "terminal", tower=True)
 
@@ -322,6 +322,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertIn("--pane '#{pane_id}'", binding)
                 self.assertIn("--client '#{client_name}'", binding)
                 self.assertEqual("--tower" in binding, tower)
+                self.assertEqual("--direct" in binding, tower)
             second = self.install(root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(config.read_text(), installed_config)
@@ -372,6 +373,7 @@ class InstallerTests(unittest.TestCase):
                     self.assertIn("--pane", binding)
                     self.assertIn("--client", binding)
                     self.assertEqual("--tower" in binding, tower)
+                    self.assertEqual("--direct" in binding, tower)
 
                 # Model an existing managed installation from before Tower had
                 # its own shortcut, then exercise its actual update/reload path.

@@ -822,7 +822,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                     "snapshot=str(snapshot), renderer=renderer, mode=snapshot.stat().st_mode & 0o777)))\n"
                     "    return subprocess.CompletedProcess(arguments, 0, '', '')\n"
                     "cli._tmux = inspect\n"
-                    "raise SystemExit(cli.main(['--tower', '--pane', sys.argv[2]]))\n"
+                    "raise SystemExit(cli.main(['--tower', '--popup', '--pane', sys.argv[2]]))\n"
                 )
                 result = subprocess.run(
                     [sys.executable, "-c", child, str(observed_path), pane], cwd=ROOT,
