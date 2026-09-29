@@ -37,13 +37,48 @@ class CliTests(unittest.TestCase):
         render.assert_called_once_with(cli.DEMO_TEXT, "demo")
         tmux.assert_not_called()
 
+    def test_challenge_demo_does_not_require_tmux(self):
+        with patch.object(cli, "_render", return_value=0) as render, patch.object(cli, "_tmux") as tmux:
+            self.assertEqual(cli.main(["--demo", "--challenge"]), 0)
+        render.assert_called_once_with(cli.DEMO_TEXT, "demo", challenge=True)
+        tmux.assert_not_called()
+
+    def test_challenge_reads_file_and_internal_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "scene.txt"
+            source.write_text("arena")
+            for argument in ("--file", "--snapshot"):
+                with self.subTest(argument=argument), patch.object(cli, "_render", return_value=0) as render:
+                    self.assertEqual(cli.main([argument, str(source), "--challenge"]), 0)
+                    render.assert_called_once_with("arena", "scene.txt", challenge=True)
+
+    def test_challenge_passes_through_tmux_launch(self):
+        with patch.object(cli, "_launch_popup", return_value=0) as launch:
+            self.assertEqual(cli.main(["--challenge", "--pane", "%7"]), 0)
+        launch.assert_called_once_with("%7", None, "terminal", challenge=True)
+
+    def test_challenge_rejects_non_game_commands(self):
+        for argument in ("--doctor", "--session"):
+            with self.subTest(argument=argument), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    cli.main([argument, "--challenge"])
+                self.assertEqual(error.exception.code, 2)
+
+    def test_render_passes_challenge_to_ui(self):
+        with patch.object(cli.sys.stdin, "isatty", return_value=True), patch.object(cli.sys.stdout, "isatty", return_value=True), patch("terminal_smash.ui.run") as run:
+            self.assertEqual(cli._render("arena", "demo", challenge=True), 0)
+        run.assert_called_once_with("arena", label="demo", challenge=True)
+
+    def test_challenge_popup_keeps_flag_with_private_snapshot(self):
+        self._check_popup(fail=False, challenge=True)
+
     def test_snapshot_is_private_safely_quoted_and_removed(self):
         self._check_popup(fail=False)
 
     def test_snapshot_is_removed_after_popup_error(self):
         self._check_popup(fail=True)
 
-    def _check_popup(self, fail):
+    def _check_popup(self, fail, challenge=False):
         real_temporary_directory = tempfile.TemporaryDirectory
         with real_temporary_directory(prefix="smash tests '$ ") as directory:
             root = Path(directory)
@@ -64,7 +99,7 @@ class CliTests(unittest.TestCase):
                 shell = shlex.split(arguments[-1])
                 self.assertEqual(shell[0], str(root / "terminal-smash"))
                 self.assertEqual(shell[1], "--snapshot")
-                self.assertEqual(shell[3:], ["--label", "a label ' $()"])
+                self.assertEqual(shell[3:], ["--label", "a label ' $()"] + (["--challenge"] if challenge else []))
                 snapshot = Path(shell[2])
                 snapshot_paths.append(snapshot)
                 self.assertEqual(snapshot.read_text(), source)
@@ -77,9 +112,9 @@ class CliTests(unittest.TestCase):
             with patch.dict(os.environ, {"TMUX": "socket,1,0", "TMUX_PANE": "%2"}), patch.object(cli, "__file__", str(root / "terminal_smash" / "cli.py")), patch.object(cli, "_tmux", side_effect=mock_tmux), patch.object(cli.tempfile, "TemporaryDirectory", side_effect=lambda **kw: real_temporary_directory(dir=root, **kw)):
                 if fail:
                     with self.assertRaisesRegex(cli.UserError, "popup failed"):
-                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()")
+                        cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge)
                 else:
-                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()"), 0)
+                    self.assertEqual(cli._launch_popup("%7", "/dev/pts/123", "a label ' $()", challenge=challenge), 0)
             self.assertEqual([command[0] for command in seen], ["-V", "capture-pane", "display-popup"])
             self.assertEqual(len(snapshot_paths), 1)
             self.assertFalse(snapshot_paths[0].parent.exists())

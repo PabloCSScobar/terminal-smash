@@ -1,7 +1,8 @@
-"""Frame-rate independent game physics; no terminal or subprocess side effects."""
+"""Frame-rate independent arcade physics, with no terminal or filesystem effects."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 import math
 import random
 
@@ -38,121 +39,405 @@ class Wave:
     age: float = 0.0
 
 
+@dataclass
+class FallingChunk:
+    cells: list[Cell]
+    offset_y: float = 0.0
+    vy: float = 1.0
+
+
+@dataclass
+class Trail:
+    x: float
+    y: float
+    life: float = 0.18
+
+
+@dataclass
+class Enemy:
+    # x is the centre of the five-column label, y the feet row.
+    x: float
+    y: float
+    hp: int = 2
+    label: str = "ERROR"
+    facing: int = 1
+    hurt_until: float = 0.0
+    cells: list[Cell] = field(default_factory=list, repr=False)
+
+
 class World:
     """Coordinates are character cells; player.y is the row occupied by feet."""
 
-    def __init__(self, cells: list[Cell], width: int, height: int, seed: int | None = None):
+    def __init__(self, cells: list[Cell], width: int, height: int,
+                 seed: int | None = None, *, duration: float | None = None):
         self.width = max(8, width)
         self.height = max(6, height)
         self.original = tuple(cells)
         self.rng = random.Random(seed)
-        self.time = 0.0
+        self.duration = max(0.0, duration) if duration is not None else None
+        self.terrain_revision = 0
         self.reset()
 
+    @property
+    def time_left(self) -> float | None:
+        return None if self.duration is None else max(0.0, self.duration - self.round_elapsed)
+
+    @property
+    def cleared(self) -> bool:
+        return self.total > 0 and not self.cells and not self.falling and not self.enemies
+
     def reset(self) -> None:
+        self.time = self.round_elapsed = 0.0
         self.cells = {(c.x, c.y): c for c in self.original
-                      if 0 <= c.x < self.width and 0 <= c.y < self.height - 1}
+                      if 0 <= c.x and c.x + c.width <= self.width
+                      and 0 <= c.y < self.height - 1}
         self.occupied = {(c.x + dx, c.y): (c.x, c.y)
                          for c in self.cells.values() for dx in range(c.width)}
         self.total = len(self.cells)
-        self.destroyed = 0
+        self.destroyed = self.score = self.combo = 0
+        self.multiplier = 1
+        self.combo_until = 0.0
+        self.finished = False
+        self.finish_reason = ""
         self.player = Player(float(max(2, self.width // 3)), 2.0)
         self.particles: list[Particle] = []
         self.waves: list[Wave] = []
+        self.falling: list[FallingChunk] = []
+        self.trails: list[Trail] = []
+        self.enemies: list[Enemy] = []
         self.direction = 0
-        self.move_until = 0.0
-        self.drop_until = 0.0
-        self.attack_until = 0.0
-        self.next_punch = 0.0
-        self.next_blast = 0.0
+        self.move_until = self.drop_until = self.attack_until = 0.0
+        self.next_punch = self.next_blast = self.next_dash = self.next_slam = 0.0
+        self.dash_until = self.landing_until = self.hurt_until = 0.0
+        self.jump_started = self.attack_started = -1.0
+        self.slamming = False
+        self._dash_direction = 1
+        self._next_trail = 0.0
+        self._pending_falling = 0
+        self._spawn_enemies()
+        self.terrain_revision += 1
+        if self.duration == 0:
+            self._finish("time")
+
+    def _spawn_enemies(self) -> None:
+        """Animate whole ERROR words, retaining their letters for accounting."""
+        def word_character(cell: Cell | None) -> bool:
+            return bool(cell and (cell.char.isalnum() or cell.char == "_"))
+
+        for (x, y), cell in sorted(list(self.cells.items()), key=lambda item: (item[0][1], item[0][0])):
+            if len(self.enemies) >= 8:
+                break
+            if cell.char.upper() != "E":
+                continue
+            letters = [self.cells.get((x + n, y)) for n in range(5)]
+            if any(c is None or c.width != 1 for c in letters):
+                continue
+            if "".join(c.char for c in letters).upper() != "ERROR":
+                continue
+            before = self.cells.get(self.occupied.get((x - 1, y)))
+            after = self.cells.get(self.occupied.get((x + 5, y)))
+            if word_character(before) or word_character(after):
+                continue
+            source = [self._remove((c.x, c.y)) for c in letters]
+            self.enemies.append(Enemy(float(x + 2), float(y + 1), cells=source))
+
+    def _remove(self, key: tuple[int, int]) -> Cell:
+        cell = self.cells.pop(key)
+        for dx in range(cell.width):
+            self.occupied.pop((cell.x + dx, cell.y), None)
+        return cell
 
     def move(self, direction: int) -> None:
+        if self.finished:
+            return
         self.direction = 1 if direction > 0 else -1
         self.player.facing = self.direction
         self.move_until = self.time + 0.16
 
     def jump(self) -> None:
+        if self.finished or self.slamming:
+            return
         if self.player.grounded or self.player.jumps < 2:
             self.player.vy = -21.0
             self.player.grounded = False
             self.player.jumps += 1
+            self.jump_started = self.time
 
     def drop(self) -> None:
+        if self.finished:
+            return
         self.drop_until = self.time + 0.22
         self.player.grounded = False
         self.player.vy = max(5.0, self.player.vy)
 
     def return_to_top(self) -> None:
-        """Reach isolated text again after falling below it, keeping destruction."""
+        """Reach isolated text again, retaining destruction and the round clock."""
+        if self.finished:
+            return
         self.player.y = 2.0
         self.player.vx = self.player.vy = 0.0
         self.player.grounded = False
         self.player.jumps = 0
-        self.move_until = self.drop_until = 0.0
+        self.move_until = self.drop_until = self.dash_until = 0.0
+        self.slamming = False
 
     def punch(self) -> int:
-        if self.time < self.next_punch:
+        if self.finished or self.time < self.next_punch:
             return 0
         self.next_punch = self.time + 0.09
+        self.attack_started = self.time
         self.attack_until = self.time + 0.11
         p = self.player
-        return self.destroy(p.x + p.facing * 3.0, p.y - 0.8, 4.5, 2.2)
+        strength = 1 + (self.multiplier - 1) * 0.07
+        return self.destroy(p.x + p.facing * 3.0, p.y - 0.8,
+                            4.5 * strength, 2.2 * strength)
 
     def blast(self) -> int:
-        if self.time < self.next_blast:
+        if self.finished or self.time < self.next_blast:
             return 0
         self.next_blast = self.time + 0.45
+        self.attack_started = self.time
+        self.attack_until = self.time + 0.16
         p = self.player
-        self.waves.append(Wave(p.x, p.y - 1.0))
-        return self.destroy(p.x, p.y - 1.0, 12.0, 5.5)
+        self._wave(p.x, p.y - 1.0)
+        strength = 1 + (self.multiplier - 1) * 0.07
+        return self.destroy(p.x, p.y - 1.0, 12.0 * strength, 5.5 * strength,
+                            enemy_damage=2)
 
-    def destroy(self, x: float, y: float, rx: float, ry: float) -> int:
-        hit = [key for key, c in self.cells.items()
-               if ((c.x + (c.width - 1) / 2 - x) / rx) ** 2 + ((c.y - y) / ry) ** 2 <= 1]
-        for key in hit:
-            c = self.cells.pop(key)
-            for dx in range(c.width):
-                self.occupied.pop((c.x + dx, c.y), None)
-            vx = (c.x - x) * 2.6 + self.rng.uniform(-12, 12)
-            vy = -self.rng.uniform(4, 15) + (c.y - y) * 0.9
-            self.particles.append(Particle(c.char, c.style, c.x, c.y, vx, vy,
-                                           self.rng.uniform(0.5, 1.4), c.width))
-        self.destroyed += len(hit)
-        if hit:
-            for _ in range(min(18, len(hit) * 2)):
-                self.particles.append(Particle(self.rng.choice(".*+"), Style(fg=220, bold=True),
-                                               x, y, self.rng.uniform(-22, 22),
-                                               self.rng.uniform(-12, 4), self.rng.uniform(0.15, 0.45)))
-        # Bound rendering and memory even for very large terminal windows.
+    def dash(self) -> bool:
+        if self.finished or self.slamming or self.time < self.next_dash:
+            return False
+        self.next_dash = self.time + 0.55
+        self.dash_until = self.time + 0.19
+        self._dash_direction = self.player.facing
+        self.player.vx = self._dash_direction * 110.0
+        self._next_trail = self.time
+        self.attack_started = self.time
+        self.attack_until = self.dash_until
+        return True
+
+    def slam(self) -> bool:
+        if (self.finished or self.slamming or self.player.grounded
+                or self.time < self.next_slam):
+            return False
+        self.next_slam = self.time + 0.5
+        self.dash_until = self.move_until = 0.0
+        self.slamming = True
+        self.player.vy = 68.0
+        self.player.vx *= 0.3
+        self.attack_started = self.time
+        return True
+
+    def _award(self, count: int, *, bonus: int = 0) -> None:
+        if not count and not bonus:
+            return
+        if self.time >= self.combo_until:
+            self.combo = 0
+        self.combo += 1
+        self.multiplier = min(5, 1 + self.combo // 3)
+        self.combo_until = self.time + 1.7
+        self.score += (count * 10 + bonus) * self.multiplier
+
+    def _wave(self, x: float, y: float) -> None:
+        self.waves.append(Wave(x, y))
+        self.waves = self.waves[-24:]
+
+    def _debris(self, cell: Cell, x: float, y: float, *, offset_y: float = 0.0,
+                position_x: float | None = None, position_y: float | None = None) -> None:
+        px = cell.x if position_x is None else position_x
+        py = cell.y + offset_y if position_y is None else position_y
+        self.particles.append(Particle(cell.char, cell.style, px, py,
+                                       (px - x) * 2.6 + self.rng.uniform(-12, 12),
+                                       -self.rng.uniform(4, 15) + (py - y) * 0.9,
+                                       self.rng.uniform(0.5, 1.4), cell.width))
+
+    def _sparks(self, x: float, y: float, count: int) -> None:
+        colour = (220, 214, 208, 201, 196)[self.multiplier - 1]
+        for _ in range(min(28, count * 2 + self.multiplier - 1)):
+            self.particles.append(Particle(self.rng.choice(".*+"), Style(fg=colour, bold=True),
+                                           x, y, self.rng.uniform(-22, 22),
+                                           self.rng.uniform(-12, 4), self.rng.uniform(0.15, 0.45)))
         self.particles = self.particles[-800:]
-        return len(hit)
+
+    def _ellipse_keys(self, x: float, y: float, rx: float, ry: float) -> set[tuple[int, int]]:
+        """Use the occupancy index, so a dash does not scan the whole screen."""
+        keys = set()
+        for row in range(max(0, math.floor(y - ry)), min(self.height - 2, math.ceil(y + ry)) + 1):
+            for col in range(max(0, math.floor(x - rx - 1)), min(self.width - 1, math.ceil(x + rx + 1)) + 1):
+                key = self.occupied.get((col, row))
+                if key is not None:
+                    cell = self.cells[key]
+                    if ((cell.x + (cell.width - 1) / 2 - x) / rx) ** 2 + ((cell.y - y) / ry) ** 2 <= 1:
+                        keys.add(key)
+        return keys
+
+    def _destroy_static(self, keys: set[tuple[int, int]], x: float, y: float) -> int:
+        removed = [self._remove(key) for key in sorted(keys) if key in self.cells]
+        for cell in removed:
+            self._debris(cell, x, y)
+        if removed:
+            self.destroyed += len(removed)
+            self.terrain_revision += 1
+            self._collapse(removed)
+        return len(removed)
+
+    def _collapse(self, removed: list[Cell]) -> None:
+        """Only damaged neighbours lose their anchors; untouched text stays put.
+
+        Horizontal text runs act as platforms. A severed fragment or a run above
+        a removed support falls once no letters directly underneath support it.
+        Cascades are driven by local occupancy lookups, with bounded live chunks.
+        """
+        pending: deque[tuple[int, int]] = deque()
+
+        def neighbours(cell: Cell) -> None:
+            for col, row in [(cell.x - 1, cell.y), (cell.x + cell.width, cell.y)]:
+                key = self.occupied.get((col, row))
+                if key is not None:
+                    pending.append(key)
+            for dx in range(cell.width):
+                key = self.occupied.get((cell.x + dx, cell.y - 1))
+                if key is not None:
+                    pending.append(key)
+
+        for cell in removed:
+            neighbours(cell)
+        seen: set[tuple[int, int]] = set()
+        examined = 0
+        while pending and len(self.falling) + self._pending_falling < 80 and examined < 8192:
+            key = pending.popleft()
+            if key not in self.cells or key in seen or key[1] == 0:
+                continue
+            run: dict[tuple[int, int], Cell] = {}
+            stack = [key]
+            while stack:
+                current = stack.pop()
+                if current in run:
+                    continue
+                cell = self.cells[current]
+                run[current] = cell
+                for col in (cell.x - 1, cell.x + cell.width):
+                    neighbour = self.occupied.get((col, cell.y))
+                    if neighbour is not None and neighbour not in run:
+                        stack.append(neighbour)
+            seen.update(run)
+            examined += len(run)
+            supported = any((c.x + dx, c.y + 1) in self.occupied
+                            for c in run.values() for dx in range(c.width))
+            if supported:
+                continue
+            detached = [self._remove(key) for key in sorted(run)]
+            self.falling.append(FallingChunk(detached))
+            self.terrain_revision += 1
+            # A run examined earlier may become unsupported by this detachment.
+            seen.clear()
+            for cell in detached:
+                neighbours(cell)
+
+    def destroy(self, x: float, y: float, rx: float, ry: float, *, enemy_damage: int = 1) -> int:
+        if self.finished or rx <= 0 or ry <= 0:
+            return 0
+        count = self._destroy_static(self._ellipse_keys(x, y, rx, ry), x, y)
+        # Detached letters remain destructible in flight, including wide glyphs.
+        for chunk in self.falling:
+            survivors = []
+            for cell in chunk.cells:
+                if (((cell.x + (cell.width - 1) / 2 - x) / rx) ** 2
+                        + ((cell.y + chunk.offset_y - y) / ry) ** 2 <= 1):
+                    self._debris(cell, x, y, offset_y=chunk.offset_y)
+                    count += 1
+                    self.destroyed += 1
+                else:
+                    survivors.append(cell)
+            chunk.cells = survivors
+        self.falling = [chunk for chunk in self.falling if chunk.cells]
+        bonus = 0
+        for enemy in self.enemies:
+            nearest_x = min(max(x, enemy.x - 2), enemy.x + 2)
+            if (((nearest_x - x) / rx) ** 2 + ((enemy.y - 1 - y) / ry) ** 2 <= 1
+                    and self.time >= enemy.hurt_until):
+                enemy.hp -= enemy_damage + (self.multiplier - 1) // 3
+                enemy.hurt_until = self.time + 0.10
+                bonus += 10
+                if enemy.hp <= 0:
+                    for index, cell in enumerate(enemy.cells):
+                        self._debris(cell, x, y, position_x=enemy.x - 2 + index,
+                                     position_y=enemy.y - 1)
+                    count += len(enemy.cells)
+                    self.destroyed += len(enemy.cells)
+                    bonus += 50
+        self.enemies = [enemy for enemy in self.enemies if enemy.hp > 0]
+        self._award(count, bonus=bonus)
+        if count or bonus:
+            self._sparks(x, y, count or 1)
+        self._check_cleared()
+        return count
+
+    def _finish(self, reason: str) -> None:
+        self.finished = True
+        self.finish_reason = reason
+        self.slamming = False
+        self.move_until = self.dash_until = 0.0
+        self.player.vx = self.player.vy = 0.0
+
+    def _check_cleared(self) -> None:
+        if self.duration is not None and self.cleared:
+            self._finish("cleared")
 
     def update(self, dt: float) -> None:
-        # Substeps avoid falling through a one-row platform on slow frames.
-        remaining = max(0.0, min(dt, 0.12))
-        while remaining > 1e-9:
+        if self.finished or not math.isfinite(dt) or dt <= 0:
+            return
+        elapsed = dt if self.duration is None else min(dt, self.time_left)
+        self.round_elapsed += elapsed
+        # The round clock uses real elapsed time; physics remains bounded after a stall.
+        remaining = min(elapsed, 0.12)
+        while remaining > 1e-9 and not self.finished:
             step = min(remaining, 1 / 120)
             self._step(step)
             remaining -= step
+        self._check_cleared()
+        if self.duration is not None and self.time_left <= 1e-9 and not self.finished:
+            self._finish("time")
 
     def _step(self, dt: float) -> None:
         self.time += dt
+        if self.combo and self.time >= self.combo_until:
+            self.combo = 0
+            self.multiplier = 1
         p = self.player
-        if self.time < self.move_until:
+        was_grounded = p.grounded
+        dashing = self.time < self.dash_until
+        if dashing:
+            p.vx = self._dash_direction * 110.0
+            p.vy = 0.0
+        elif self.time < self.move_until and not self.slamming:
             p.vx = self.direction * 40.0
         elif p.grounded:
-            # Jump input may replace movement autorepeat in a terminal.
-            # Brake on the ground; retain horizontal momentum through the jump.
+            # Terminal jump input replaces autorepeat: retain airborne momentum.
             p.vx *= math.exp(-24.0 * dt)
+        elif not self.slamming and abs(p.vx) > 40:
+            p.vx = math.copysign(40.0, p.vx)
+        old_x = p.x
         p.x = max(1.0, min(self.width - 2.0, p.x + p.vx * dt))
+        if dashing:
+            # A swept ellipse covers both endpoints, even on a slow frame.
+            self.destroy((old_x + p.x) / 2, p.y - 0.7,
+                         2.8 + abs(p.x - old_x) / 2, 1.7, enemy_damage=2)
+            if self.finished:
+                return
+            if self.time >= self._next_trail:
+                self.trails.append(Trail(p.x, p.y))
+                self.trails = self.trails[-32:]
+                self._next_trail = self.time + 0.018
         old_y = p.y
-        p.vy = min(40.0, p.vy + 54.0 * dt)
+        p.vy = 0.0 if dashing else (68.0 if self.slamming else min(40.0, p.vy + 54.0 * dt))
         next_y = old_y + p.vy * dt
         p.grounded = False
+        impact_y = None
         if p.vy >= 0:
             floor = self.height - 2.0
             landing = floor if next_y >= floor else None
-            if self.time >= self.drop_until:
+            if self.slamming or self.time >= self.drop_until:
                 x = int(round(p.x))
                 for row in range(max(0, math.ceil(old_y + 1 - 1e-7)),
                                  min(self.height - 1, math.floor(next_y + 1)) + 1):
@@ -166,10 +451,26 @@ class World:
                 p.vy = 0.0
                 p.grounded = True
                 p.jumps = 0
+                if not was_grounded:
+                    self.landing_until = self.time + (0.20 if self.slamming else 0.11)
+                if self.slamming:
+                    impact_y = next_y + 1
         if next_y < 2.0:
             next_y = 2.0
             p.vy = max(0.0, p.vy)
         p.y = next_y
+        if impact_y is not None:
+            self.slamming = False
+            self._wave(p.x, impact_y)
+            self.attack_until = self.time + 0.2
+            strength = 1 + (self.multiplier - 1) * 0.07
+            self.destroy(p.x, impact_y, 15.0 * strength, 4.0 * strength, enemy_damage=3)
+            if self.finished:
+                return
+        self._step_falling(dt)
+        if self.finished:
+            return
+        self._step_enemies(dt)
         alive = []
         for particle in self.particles:
             particle.life -= dt
@@ -182,3 +483,62 @@ class World:
         for wave in self.waves:
             wave.age += dt
         self.waves = [wave for wave in self.waves if wave.age < 0.30]
+        for trail in self.trails:
+            trail.life -= dt
+        self.trails = [trail for trail in self.trails if trail.life > 0]
+
+    def _step_falling(self, dt: float) -> None:
+        current, self.falling = self.falling, []
+        self._pending_falling = len(current)
+        for chunk in current:
+            self._pending_falling -= 1
+            old_offset = chunk.offset_y
+            chunk.vy = min(42.0, chunk.vy + 38.0 * dt)
+            chunk.offset_y += chunk.vy * dt
+            hit: set[tuple[int, int]] = set()
+            floor_hit = False
+            for cell in chunk.cells:
+                old_row = math.floor(cell.y + old_offset)
+                new_row = math.floor(cell.y + chunk.offset_y)
+                floor_hit |= new_row >= self.height - 2
+                for row in range(max(0, old_row + 1), min(self.height - 2, new_row) + 1):
+                    for dx in range(cell.width):
+                        key = self.occupied.get((cell.x + dx, row))
+                        if key is not None:
+                            hit.add(key)
+            if not hit and not floor_hit:
+                self.falling.append(chunk)
+                continue
+            x = sum(c.x + (c.width - 1) / 2 for c in chunk.cells) / len(chunk.cells)
+            y = min(self.height - 2, chunk.cells[0].y + chunk.offset_y)
+            count = self._destroy_static(hit, x, y)
+            for cell in chunk.cells:
+                self._debris(cell, x, y, offset_y=chunk.offset_y)
+            self.destroyed += len(chunk.cells)
+            self._award(count + len(chunk.cells))
+            self._sparks(x, y, count + len(chunk.cells))
+            self._wave(x, y)
+        self._check_cleared()
+
+    def _step_enemies(self, dt: float) -> None:
+        p = self.player
+        for enemy in self.enemies:
+            dx, dy = p.x - enemy.x, p.y - enemy.y
+            if abs(dx) > 0.15:
+                enemy.facing = 1 if dx > 0 else -1
+                enemy.x += math.copysign(min(abs(dx), 7.5 * dt), dx)
+            enemy.y += math.copysign(min(abs(dy), 4.0 * dt), dy) if dy else 0
+            enemy.x = max(2.0, min(self.width - 3.0, enemy.x))
+            enemy.y = max(1.0, min(self.height - 2.0, enemy.y))
+            if (self.time > 1.0 and self.time >= self.hurt_until
+                    and self.time >= enemy.hurt_until and self.time >= self.dash_until
+                    and not self.slamming and abs(p.x - enemy.x) < 3.2
+                    and abs(p.y - enemy.y) < 1.7):
+                self.hurt_until = self.time + 0.85
+                self.combo = 0
+                self.multiplier = 1
+                self.combo_until = 0.0
+                p.vx = -26.0 if enemy.x >= p.x else 26.0
+                p.vy = -10.0
+                p.grounded = False
+                self.move_until = 0.0

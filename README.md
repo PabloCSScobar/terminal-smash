@@ -1,8 +1,10 @@
 # Terminal Smash
 
-Ludzik ASCII, który chodzi po tekście terminala i rozbija litery na odłamki. Działa w **Linuxie/WSL**, w zwykłym terminalu tekstowym. Animacja w `curses` odświeża się z docelową szybkością 90 klatek/s; nie jest płynną grafiką wektorową jak animacje przeglądarkowe.
+Ludzik ASCII, który biega po tekście terminala, przebija się przez litery dashem i zrzuca całe fragmenty tekstu na niższe platformy. Działa w **Linuxie/WSL**, w zwykłym terminalu tekstowym. Animacja w `curses` odświeża się z docelową szybkością 90 klatek/s.
 
-Naciśnięcia klawiszy budzą pętlę gry od razu, a nieruchomy tekst jest buforowany. Ruch jest szybszy, skoki krótsze w czasie, a ataki mają krótsze przerwy. Eksplozje animują odłamki bez przesuwania całego ekranu.
+Dash zostawia smugę, uderzenie z powietrza wyrzuca odłamki na boki, a podcięte podpory wywołują zawalenia i reakcje łańcuchowe. Postać ma animacje biegu, skoku, ataku i lądowania. Kolejne trafienia budują combo i mnożnik punktów; czerwone słowa `ERROR` ożywają i ścigają gracza. Możesz swobodnie rozbijać planszę albo włączyć 30-sekundową demolkę z lokalnym rekordem.
+
+Naciśnięcia klawiszy budzą pętlę gry od razu, nieruchomy tekst jest buforowany, a liczba odłamków pozostaje ograniczona. Eksplozje animują odłamki bez przesuwania całego ekranu.
 
 W trybie tmux gra używa kolorowej migawki widocznego panelu. Tekst staje się platformami, a uderzenia wyrzucają znaki w powietrze. Wyjście z gry wraca do prawdziwego terminala; uruchomione programy i historia powłoki działają dalej.
 
@@ -34,26 +36,41 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | W, ↑ lub Spacja | Skok z zachowaniem rozpędu (także podwójny) |
 | J | Uderzenie w stronę ruchu |
 | K | Wybuch wokół postaci |
+| L | Dash w stronę ruchu, także w powietrzu |
+| X | Uderzenie z powietrza w dół |
 | S lub ↓ | Zejście przez platformę |
 | T lub Home | Powrót postaci na górę bez odtwarzania tekstu |
-| R | Odtworzenie tekstu i reset |
-| ? | Pomoc |
+| R | Odtworzenie tekstu i nowa runda w aktualnym trybie |
+| C | Przełączenie swobodnej demolki / rundy 30 s i nowy start |
+| ? | Pomoc i pauza, również zatrzymanie zegara rundy |
 | Esc lub Q | Powrót do terminala |
 
-Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz zmienić kierunek przez A/D lub strzałki; skok z miejsca pozostaje pionowy.
+Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz zmienić kierunek przez A/D lub strzałki; skok z miejsca pozostaje pionowy. Połącz skok, dash i uderzenie w dół, aby dobrać się do podpór pod kilkoma piętrami tekstu.
+
+Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Kontakt z przeciwnikiem `ERROR` odrzuca postać i przerywa serię; dash oraz uderzenie w dół pozwalają przebić się przez niego.
+
+Fragmenty tracące ostatnią podporę spadają i rozbijają niższe linie. Tekst wiszący od początku migawki pozostaje na miejscu do chwili naruszenia, więc plansza nie rozsypuje się sama po starcie.
 
 ## Tryby uruchomienia
 
 ```bash
 terminal-smash               # migawka bieżącego panelu tmux
 terminal-smash --demo        # kolorowa plansza pokazowa; tmux nie jest potrzebny
+terminal-smash --demo --challenge # demolka planszy pokazowej na czas
+terminal-smash --challenge   # 30-sekundowa runda na migawce panelu tmux
 terminal-smash --file log.txt # tekst z pliku UTF-8, do 2 MiB
 terminal-smash --session     # utwórz/przyłącz sesję tmux „smash”
 terminal-smash --doctor      # diagnostyka środowiska
 python3 -m terminal_smash --demo # uruchomienie z katalogu źródeł
 ```
 
-`--pane %0` i `--client /dev/pts/0` służą do jawnego wskazania panelu i klienta tmux; skrót klawiszowy przekazuje je automatycznie.
+`--pane %0` i `--client /dev/pts/0` służą do jawnego wskazania panelu i klienta tmux; skrót klawiszowy przekazuje je automatycznie. `--challenge` można łączyć z `--demo`, `--file` lub przechwytywaniem panelu tmux.
+
+## Demolka na czas i rekordy
+
+Runda trwa do 30 sekund aktywnej gry; pełne wyczyszczenie planszy kończy ją wcześniej. Buduj combo kolejnymi trafieniami i zawaleniami, aby zwiększać mnożnik punktów. Po końcu rundy wynik zostaje na ekranie; **R** rozpoczyna kolejną próbę, a **C** wraca do swobodnej demolki. Pomoc pod **?** zatrzymuje czas. Zmiana rozmiaru terminala rozpoczyna nową rundę i odtwarza tekst.
+
+Rekord jest osobny dla tej samej planszy i rozmiaru terminala. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
 
 ## Instalacja i usunięcie
 
@@ -73,7 +90,7 @@ Odinstalowanie usuwa oznaczony blok, launcher i niezmienione pliki programu. Zac
 - To interaktywna kopia widocznego tekstu: niszczenie nie edytuje plików ani nie wykonuje poleceń z ekranu. Migawka trafia chwilowo do prywatnego katalogu tymczasowego i jest usuwana po zamknięciu popupu.
 - Przechwytywany jest bieżący ekran jednego panelu, bez całej historii przewijania. Procesy pod animacją mogą nadal wypisywać nowe dane, których migawka już nie aktualizuje.
 - Pełnoekranowy popup zasłania bieżący klient tmux. Przy podziale okna plansza bazuje na wybranym panelu.
-- Zmiana rozmiaru okna odtwarza migawkę i resetuje zniszczenia.
+- Zmiana rozmiaru okna odtwarza migawkę, resetuje zniszczenia i rozpoczyna rundę od nowa.
 - Kolory i wygląd znaków zależą od terminala i czcionki; nietypowe symbole, emoji i znaki szerokie mogą zostać uproszczone.
 - Demonstracja i tryb pliku wymagają interaktywnego terminala. `--doctor` działa także bez niego.
 
@@ -83,4 +100,4 @@ Odinstalowanie usuwa oznaczony blok, launcher i niezmienione pliki programu. Zac
 python3 -m unittest discover -s tests -v
 ```
 
-Testy integracji instalatora pracują wyłącznie w katalogach tymczasowych i nie modyfikują konfiguracji użytkownika.
+Testy instalatora, lokalnych rekordów i sesji terminala pracują w katalogach tymczasowych i nie modyfikują konfiguracji ani rekordów użytkownika.

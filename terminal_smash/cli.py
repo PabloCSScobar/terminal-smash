@@ -15,31 +15,25 @@ from typing import Sequence
 
 MIN_TMUX = (3, 4)
 MAX_FILE_BYTES = 2 * 1024 * 1024
-DEMO_TEXT = """\x1b[1;36mpawel@wsl\x1b[0m:\x1b[1;34m~/projects/terminal-smash\x1b[0m$ make build
-\x1b[32m[OK]\x1b[0m loading terminal physics engine...
-\x1b[32m[OK]\x1b[0m colorful text is ready to fall apart
+DEMO_TEXT = """\x1b[1;36m  T E R M I N A L   S M A S H\x1b[0m           \x1b[33mASCII ARCADE\x1b[0m
 
-\x1b[1;33m  TERMINAL SMASH                     HIT THE TEXT!\x1b[0m
-
-  \x1b[36mconst\x1b[0m terminal = {
-    state: \x1b[32m"peaceful"\x1b[0m,
-    gravity: \x1b[35m9.81\x1b[0m,
-    breakable: \x1b[33mtrue\x1b[0m
-  };
-
-\x1b[31merror:\x1b[0m too many meetings, not enough smashing
-\x1b[33mwarning:\x1b[0m objects in the terminal may be punchable
-
-\x1b[34m  ==============\x1b[0m       \x1b[35m=============\x1b[0m
-
-\x1b[32m  $ git status\x1b[0m
-  On branch codex/terminal-smash
-  nothing to commit, ready to smash
-
-\x1b[36m  ====================     ====================\x1b[0m
-
-  Move: A/D or arrows  Jump: W/SPACE  Punch: J  Blast: K
-  Drop: S/down  Reset: R  Help: ?  Exit: ESC/Q
+\x1b[36m      +====================+\x1b[0m                 \x1b[35m+================+\x1b[0m
+\x1b[36m      |\x1b[0m  BUILD SUCCESSFUL  \x1b[36m|\x1b[0m                 \x1b[35m|\x1b[0m CACHE OVERFLOW \x1b[35m|\x1b[0m
+\x1b[36m      +====================+\x1b[0m                 \x1b[35m+================+\x1b[0m
+\x1b[36m             |      |\x1b[0m                       \x1b[35m    |      |\x1b[0m
+\x1b[36m             |      |\x1b[0m                       \x1b[35m    |      |\x1b[0m
+\x1b[33m   ================\x1b[0m    \x1b[1;31mERROR\x1b[0m    \x1b[33m=============================\x1b[0m
+\x1b[33m         |     |                         |             |\x1b[0m
+\x1b[33m         |     |                         |             |\x1b[0m
+\x1b[32m  +======================+\x1b[0m       \x1b[34m+========================+\x1b[0m
+\x1b[32m  |\x1b[0m git push --force-smash\x1b[32m|\x1b[0m       \x1b[34m|\x1b[0m make clean && make BOOM \x1b[34m|\x1b[0m
+\x1b[32m  +======================+\x1b[0m       \x1b[34m+========================+\x1b[0m
+\x1b[32m       |           |\x1b[0m             \x1b[34m      |           |\x1b[0m
+\x1b[32m       |           |\x1b[0m             \x1b[34m      |           |\x1b[0m
+\x1b[1;31m            ERROR\x1b[0m                          \x1b[1;31mERROR\x1b[0m
+\x1b[36m  ====================================================================\x1b[0m
+  \x1b[1mL\x1b[0m DASH   \x1b[1mX\x1b[0m AIR SLAM   \x1b[1mJ\x1b[0m PUNCH   \x1b[1mK\x1b[0m BLAST   \x1b[1mC\x1b[0m 30-SECOND CHALLENGE
+  A/D MOVE   SPACE JUMP   R REBUILD   ? HELP   ESC RETURN TO TERMINAL
 """
 
 
@@ -73,7 +67,7 @@ def _tmux_version() -> str:
     return version
 
 
-def _render(text: str, label: str) -> int:
+def _render(text: str, label: str, *, challenge: bool = False) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise UserError("Animacja wymaga interaktywnego terminala. Uruchom ją w oknie WSL.")
     try:
@@ -82,7 +76,10 @@ def _render(text: str, label: str) -> int:
     except ImportError as exc:
         raise UserError("Brak modułu curses. Uruchom program w Pythonie 3 na Linuxie/WSL.") from exc
     try:
-        run(text, label=label)
+        if challenge:
+            run(text, label=label, challenge=True)
+        else:
+            run(text, label=label)
     except curses.error as exc:
         raise UserError(f"Nie można uruchomić ekranu terminala: {exc}") from exc
     return 0
@@ -99,7 +96,9 @@ def _read_file(path: Path) -> str:
         raise UserError(f"Nie można odczytać pliku {path}: {exc.strerror or exc}") from exc
 
 
-def _launch_popup(pane: str | None, client: str | None, label: str) -> int:
+def _launch_popup(
+    pane: str | None, client: str | None, label: str, *, challenge: bool = False
+) -> int:
     if not os.environ.get("TMUX"):
         raise UserError(
             "Aby rozbijać tekst swojego terminala, wejdź do tmux:\n"
@@ -127,7 +126,10 @@ def _launch_popup(pane: str | None, client: str | None, label: str) -> int:
         descriptor = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(captured)
-        renderer = shlex.join([str(launcher), "--snapshot", str(snapshot), "--label", label])
+        render_arguments = [str(launcher), "--snapshot", str(snapshot), "--label", label]
+        if challenge:
+            render_arguments.append("--challenge")
+        renderer = shlex.join(render_arguments)
         command = ["display-popup", "-E", "-B", "-w", "100%", "-h", "100%", "-t", target]
         if client:
             command.extend(["-c", client])
@@ -169,6 +171,7 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--snapshot", type=Path, help=argparse.SUPPRESS)
     mode.add_argument("--doctor", action="store_true", help="sprawdź środowisko")
     mode.add_argument("--session", action="store_true", help="otwórz/przyłącz sesję tmux o nazwie smash")
+    parser.add_argument("--challenge", action="store_true", help="demolka na czas: 30 sekund i lokalny rekord")
     parser.add_argument("--pane", metavar="ID", help="identyfikator panelu tmux, np. %%0")
     parser.add_argument("--client", metavar="TTY", help="klient tmux, w którym otworzyć animację")
     parser.add_argument("--label", default=None, help=argparse.SUPPRESS)
@@ -178,8 +181,11 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.challenge and (args.doctor or args.session):
+        parser.error("--challenge wymaga planszy: --demo, --file albo panelu tmux")
     if (args.pane or args.client) and any((args.demo, args.file, args.snapshot, args.doctor, args.session)):
         parser.error("--pane i --client dotyczą tylko przechwytywania panelu tmux")
+    render_options = {"challenge": True} if args.challenge else {}
     try:
         if args.doctor:
             return _doctor()
@@ -190,11 +196,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "smash"])
             return 0
         if args.demo:
-            return _render(DEMO_TEXT, args.label or "demo")
+            return _render(DEMO_TEXT, args.label or "demo", **render_options)
         source = args.file or args.snapshot
         if source is not None:
-            return _render(_read_file(source), args.label or source.name)
-        return _launch_popup(args.pane, args.client, args.label or "terminal")
+            return _render(_read_file(source), args.label or source.name, **render_options)
+        return _launch_popup(args.pane, args.client, args.label or "terminal", **render_options)
     except KeyboardInterrupt:
         return 130
     except (UserError, OSError) as exc:
