@@ -201,7 +201,8 @@ class TerminalIntegrationTests(unittest.TestCase):
             "    temporary = state.with_suffix('.tmp')\n"
             "    temporary.write_text(json.dumps(dict(world=id(world), rows=rows, columns=columns, "
             "x=world.player.x, y=world.player.y, elapsed=world.elapsed, progress=world.progress, "
-            "total=world.total_climb, help=help_open, finished=world.finished)))\n"
+            "total=world.total_climb, help=help_open, finished=world.finished, "
+            "floor=world.floor_row, grounded=world.player.grounded)))\n"
             "    temporary.replace(state)\n"
             "ui._draw_tower = observe\n"
             "render = ui._draw\n"
@@ -230,6 +231,23 @@ class TerminalIntegrationTests(unittest.TestCase):
             self.assertFalse(running_mode[3] & (termios.ECHO | termios.ICANON))
             start = tower_state(lambda state: state["elapsed"] > 0.1)
             self.assertGreater(start["total"], 30, "The demo must extend above the visible screen")
+            terminal.until(b"SAFE FLOOR")
+
+            # The attempt starts on the fixed base floor. Down cannot pass
+            # through it; a normal jump leaves it without ending the run.
+            terminal.send(b"s")
+            landed = tower_state(lambda state: state["grounded"] and state["y"] == state["floor"] - 1)
+            self.assertFalse(landed["finished"])
+            terminal.send(b"s")
+            terminal.pump(0.15)
+            held = tower_state(lambda state: state["elapsed"] > landed["elapsed"] + 0.1)
+            self.assertTrue(held["grounded"])
+            self.assertEqual(held["y"], held["floor"] - 1)
+            self.assertFalse(held["finished"])
+            terminal.send(b"w")
+            tower_state(lambda state: state["y"] < held["y"] - 0.2 and not state["grounded"])
+            terminal.send(b"R")
+            start = tower_state(lambda state: state["elapsed"] < 0.1 and state["grounded"])
 
             terminal.send(b"dw")
             moved = tower_state(lambda state: state["x"] > start["x"] + 0.2
@@ -304,7 +322,8 @@ class TerminalIntegrationTests(unittest.TestCase):
             "    draw(win, world, *args, **kwargs)\n"
             "    rows, columns = win.getmaxyx()\n"
             "    scene = [win.instr(row, 0, columns - 1).decode('utf-8', errors='replace') "
-            "for row in range(2, rows - 3)]\n"
+            "for row in range(2, rows - 3) "
+            "if row != world.floor_row - world.camera_y + 2]\n"
             "    highlights = []\n"
             "    for row in range(2, rows - 3):\n"
             "        for column in range(columns - 1):\n"

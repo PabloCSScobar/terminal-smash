@@ -1,11 +1,12 @@
 """Physics and source-preserving routes for the scrollback tower."""
 
 import math
+from statistics import median
 import unittest
 from unittest.mock import patch
 
 from terminal_smash.capture import Style, parse_capture
-from terminal_smash.tower import TowerWorld
+from terminal_smash.tower import Platform, TowerWorld
 
 
 def advance(world, seconds, fps=60):
@@ -18,9 +19,9 @@ def steer(world, target, fps):
     world.move(0 if abs(distance) <= world.MOVE_SPEED / fps / 2 else (1 if distance > 0 else -1))
 
 
-def climb_route(world, fps=60):
-    """Walk to a real takeoff point and climb using only public controls."""
-    for target in reversed(world.platforms[:-1]):
+def climb_steps(world, targets, fps=60):
+    """Walk to a supported takeoff point and jump using only public controls."""
+    for target in targets:
         if world.finished:
             break
         row = round(world.player.y + 1)
@@ -28,7 +29,8 @@ def climb_route(world, fps=60):
             # A short jump can land on a higher real step than the intended one.
             # Same-row connectors are handled as walkable takeoff supports.
             continue
-        supports = world.platforms.by_row[row]
+        supports = ([Platform(world.floor_row, 0, world.width, True)]
+                    if row == world.floor_row else world.platforms.by_row[row])
         source = max(supports, key=lambda platform: platform.right - platform.left)
         takeoff = world.landing_x(source, target.centre)
         for _ in range(fps * 5):
@@ -58,6 +60,11 @@ def climb_route(world, fps=60):
             break
         if not world.player.grounded or world.player.y > target.row - 1:
             raise AssertionError(f'Failed to reach {target} from {source}: {world.player}')
+
+
+def climb_route(world, fps=60):
+    """Start on the safe floor, then climb to the actual oldest text."""
+    climb_steps(world, reversed(world.platforms), fps)
     if world.finish_reason != 'summit':
         raise AssertionError(f'Route did not finish at summit: {world.finish_reason}, {world.player}')
 
@@ -70,8 +77,14 @@ class TowerTests(unittest.TestCase):
             cells = world._history.cells(platform.row - world.HISTORY_TOP)
             selected = [cell for cell in cells if platform.left <= cell.x
                         and cell.x + cell.width <= platform.right]
-            columns = {column for cell in selected for column in range(cell.x, cell.x + cell.width)}
-            self.assertEqual(columns, set(range(platform.left, platform.right)))
+            self.assertTrue(selected)
+            self.assertEqual(selected[0].x, platform.left)
+            self.assertEqual(selected[-1].x + selected[-1].width, platform.right)
+            for left, right in zip(selected, selected[1:]):
+                self.assertTrue(0 <= right.x - left.x - left.width <= 2)
+            for cell in cells:
+                if cell.x < platform.right and cell.x + cell.width > platform.left:
+                    self.assertIn(cell, selected, 'A platform must not split a wide glyph')
             self.assertGreaterEqual(platform.left, 0)
             self.assertLessEqual(platform.right, world.width)
 
@@ -117,13 +130,42 @@ class TowerTests(unittest.TestCase):
                     climb_route(world, fps)
                     self.assertEqual(world.finish_reason, 'summit')
 
+    def test_lower_platforms_are_wider_than_upper_platforms_without_moving_source(self):
+        lines = ('x' * 100,
+                 'build output shows completed tests and recorded results ' * 2,
+                 '界e\u0301 build output 界e\u0301 status ' * 4)
+        for line in lines:
+            with self.subTest(line=line[:20]):
+                world = TowerWorld((line + '\n') * 120, 100, 24, seed=37)
+                self.assertFalse(any(platform.synthetic for platform in world.platforms))
+                top = [platform.right - platform.left for platform in world.platforms
+                       if platform.row <= world.summit_row + world.total_climb / 3]
+                bottom = [platform.right - platform.left for platform in world.platforms
+                          if platform.row >= world.summit_row + 2 * world.total_climb / 3]
+                self.assertGreaterEqual(median(bottom), 16)
+                self.assertLessEqual(median(top), 14)
+                self.assertGreater(median(bottom), median(top) + 5)
+                self.assert_original_footprints(world)
+                climb_route(world)
+
+    def test_wider_natural_platforms_can_group_neighbouring_short_words(self):
+        line = 'one two  three four five six seven'
+        world = TowerWorld((line + '\n') * 100, 80, 24, seed=37)
+        self.assertFalse(any(platform.synthetic for platform in world.platforms))
+        self.assertTrue(any(platform.right - platform.left > len('three')
+                            for platform in world.platforms))
+        self.assert_original_footprints(world)
+        climb_route(world)
+
     def test_reachable_double_jump_gap_needs_no_artificial_bridge(self):
         world = TowerWorld('summit' + '\n' * 12 + 'start', 80, 24, seed=9)
         self.assertEqual(len(world.platforms), 2)
         self.assertFalse(any(platform.synthetic for platform in world.platforms))
         self.assertIsNotNone(world.jump_delay(world.platforms[-1], world.platforms[0]))
+        climb_steps(world, [world.platforms[-1]])
+        before = world.jump_count
         climb_route(world)
-        self.assertEqual(world.jump_count, 2)
+        self.assertEqual(world.jump_count - before, 2)
 
     def test_only_disconnected_output_gets_bridges_and_keeps_original_endpoints(self):
         for text in ('top' + '\n' * 65 + 'bottom', 'top\n' + ' ' * 100 + 'bottom'):
@@ -236,14 +278,66 @@ class TowerTests(unittest.TestCase):
         world.update(0.01)
         self.assertEqual(world.player.vx, -world.MOVE_SPEED)
 
-    def test_drop_falls_below_start_and_walls_never_grip(self):
+    def test_safe_floor_is_visible_at_spawn_and_idle_movement_does_not_start_the_climb(self):
+        for width, viewport in ((8, 6), (44, 9), (80, 24)):
+            with self.subTest(width=width, viewport=viewport):
+                world = TowerWorld(('text\n') * 60, width, viewport, seed=7)
+                self.assertEqual(world.floor_row, world.start_row + 3)
+                self.assertEqual(world.player.y, world.floor_row - 1)
+                self.assertEqual(world.camera_y + world.viewport_height - 1, world.floor_row)
+                self.assertLess(world.floor_row, world.height)
+                self.assertEqual(world.progress, 0)
+                self.assertFalse(world.finished)
+                for direction in (0, 1, -1):
+                    for _ in range(120):
+                        world.move(direction)
+                        world.update(1 / 60)
+                        self.assertEqual(world.player.y, world.floor_row - 1)
+                        self.assertTrue(world.player.grounded)
+                        self.assertEqual(world.progress, 0)
+                        self.assertFalse(world.finished)
+                self.assertEqual(world.jump_count, 0)
+
+    def test_repeated_drop_cannot_pass_through_the_safe_floor(self):
         world = TowerWorld(('text\n') * 60, 44, 24, seed=7)
-        advance(world, 0.5)
-        self.assertEqual(world.player.y, world.start_row - 1)
-        world.drop()
+        for _ in range(180):
+            world.drop()
+            world.update(1 / 60)
+            self.assertEqual(world.player.y, world.floor_row - 1)
+            self.assertTrue(world.player.grounded)
+            self.assertFalse(world.finished)
+        self.assertEqual(world.progress, 0)
+
+    def test_visible_floor_catches_a_missed_first_jump_and_a_drop_from_the_first_step(self):
+        world = TowerWorld(('text\n') * 60, 80, 24, seed=7)
+        world.player.x = world.width - 2
+        world.jump()
         advance(world, 1)
-        self.assertEqual(world.finish_reason, 'fallen')
+        self.assertLessEqual(world.camera_y, world.floor_row)
+        self.assertLess(world.floor_row, world.camera_y + world.viewport_height)
+        self.assertFalse(world.finished)
+        self.assertTrue(world.player.grounded)
+        self.assertEqual(world.player.y, world.floor_row - 1)
         world.reset()
+        climb_steps(world, [world.platforms[-1]])
+        world.drop()
+        advance(world, 0.5)
+        self.assertFalse(world.finished)
+        self.assertTrue(world.player.grounded)
+        self.assertEqual(world.player.y, world.floor_row - 1)
+
+    def test_floor_outside_camera_cannot_save_a_fall(self):
+        world = TowerWorld(('text\n') * 60, 80, 24, seed=7)
+        world.camera_y = world.floor_row - world.viewport_height
+        world.player.x = world.width - 2
+        world.player.y = world.floor_row - 1
+        world.player.grounded = False
+        world.player.vy = 15
+        advance(world, 0.3)
+        self.assertEqual(world.finish_reason, 'fallen')
+
+    def test_walls_do_not_grip_above_the_floor(self):
+        world = TowerWorld(('text\n') * 60, 44, 24, seed=7)
         world.player.x = 42
         world.player.y = world.camera_y + 5
         world.player.grounded = False
@@ -254,6 +348,7 @@ class TowerTests(unittest.TestCase):
     def test_upward_motion_passes_through_real_text_and_descending_lands_on_it(self):
         world = TowerWorld('platform' + '\n' * 8 + 'platform', 80, 24, seed=1)
         target = world.platforms[0]
+        climb_steps(world, [world.platforms[-1]])
         world.jump()
         advance(world, 0.3)
         self.assertLess(world.player.y, target.row - 1)
@@ -294,7 +389,7 @@ class TowerTests(unittest.TestCase):
         self.assertTrue(world.player.grounded)
         self.assertGreater(world.elapsed, before[-1])
 
-    def test_initially_clipped_output_starts_on_newest_real_text_after_widening(self):
+    def test_initially_clipped_output_starts_on_safe_floor_after_widening(self):
         world = TowerWorld((' ' * 70 + 'output\n') * 30, 44, 24, seed=2)
         self.assertTrue(world.empty)
         world.update(4)
@@ -302,7 +397,7 @@ class TowerTests(unittest.TestCase):
         self.assertFalse(world.empty)
         self.assertFalse(world.resize_blocked)
         self.assertTrue(world.player.grounded)
-        self.assertEqual(world.player.y, world.start_row - 1)
+        self.assertEqual(world.player.y, world.floor_row - 1)
         self.assertEqual(world.progress, 0)
         self.assertEqual(world.elapsed, 0)
 
@@ -327,7 +422,7 @@ class TowerTests(unittest.TestCase):
         self.assertEqual(world.elapsed, 0)
         self.assertEqual(world.jump_count, 0)
         self.assertTrue(world.player.grounded)
-        self.assertEqual(world.player.y, world.start_row - 1)
+        self.assertEqual(world.player.y, world.floor_row - 1)
 
 
 if __name__ == '__main__':

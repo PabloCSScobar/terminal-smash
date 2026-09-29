@@ -1,5 +1,6 @@
 """Visible scrollback, camera clipping and Tower overlays on real-sized grids."""
 
+import curses
 import unittest
 from unittest.mock import patch
 
@@ -57,6 +58,32 @@ class TowerRenderingTests(unittest.TestCase):
                     self.assertIn(title, text)
                     self.assertIn('[R] retry', text)
 
+    def test_safe_floor_stays_at_tower_base_and_scrolls_out_of_view(self):
+        for rows, cols in ((14, 44), (24, 80), (60, 200)):
+            with self.subTest(rows=rows, cols=cols):
+                world = TowerWorld('output\n' * 140, cols, rows - 5, seed=3)
+                screen = Canvas(rows, cols)
+                floor_row = world.floor_row
+                initial_camera = world.camera_y
+                for camera in (initial_camera, initial_camera - 4, 0):
+                    world.camera_y = camera
+                    world.player.x = cols // 2
+                    world.player.y = floor_row - 1
+                    world.player.grounded = True
+                    self.draw(screen, world)
+                    self.assertEqual(world.floor_row, floor_row)
+                    floor_screen_row = floor_row - camera + 2
+                    scene = '\n'.join(''.join(row) for row in screen.grid[2:-3])
+                    if 2 <= floor_screen_row < rows - 3:
+                        self.assertEqual(''.join(screen.grid[floor_screen_row]),
+                                         ' SAFE FLOOR '.center(cols, '='))
+                        self.assertEqual(screen.grid[floor_screen_row - 1][cols // 2], '|')
+                    else:
+                        self.assertNotIn('SAFE FLOOR', scene)
+                    self.assertEqual(''.join(screen.grid[rows - 3]), '-' * cols)
+                    self.assertNotIn('YOU FELL', scene)
+                    self.assertNotIn('SUMMIT REACHED', scene)
+
     def test_world_factory_keeps_history_for_tower_and_crops_free_play(self):
         text = 'oldest\n' + 'session\n' * 200 + 'newest'
         tower = _new_world(text, 24, 80, False, tower=True)
@@ -96,6 +123,21 @@ class TowerRenderingTests(unittest.TestCase):
                 expected.addstr(cell.y - camera + 2, cell.x, cell.char)
             self.draw(screen, world)
             self.assertEqual(screen.grid[2:-3], expected.grid[2:-3])
+
+    def test_natural_phrase_platform_underlines_spaces_without_changing_text(self):
+        world = TowerWorld(('first second third\n') * 70, 80, 19, seed=3)
+        platform = world.platforms[-1]
+        world.camera_y = world.start_row - 4
+        world.player.y = -100
+        screen = Canvas(24, 80)
+        row = platform.row - world.camera_y + 2
+        with patch.object(screen, 'addstr', wraps=screen.addstr) as writes:
+            self.draw(screen, world)
+        self.assertEqual(''.join(screen.grid[row][:18]), 'first second third')
+        for column in (5, 12):
+            self.assertTrue(any(call.args[:3] == (row, column, ' ')
+                                and call.args[3] & curses.A_UNDERLINE
+                                for call in writes.call_args_list))
 
     def test_empty_history_shows_message_without_fabricated_platforms(self):
         for text in ('', '\n' * 100, '   \t\n' * 30):

@@ -123,11 +123,13 @@ TOWER_HELP_LINES = [
     'Bright, underlined output is your foothold.',
     'Dim text is the history behind your route.',
     'Bridges appear only across unreachable gaps.',
+    'Footholds narrow as you climb higher.',
     'A / D or arrows   run / steer in the air',
     'Space / W / up    jump (twice in the air)',
     'S / down          drop through a platform',
     'Keep climbing: the camera only follows up.',
-    'Falling below the screen ends the attempt.',
+    'The base floor catches early missed jumps.',
+    'Once it scrolls away, falling below ends the run.',
     'Reach the oldest highlighted text to win.',
     'R                 retry from the bottom',
     'V / C             free play / challenge',
@@ -488,6 +490,15 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
                     if cell.x < platform.right and cell.x + cell.width > platform.left]
         for row, x, text, width, _ in _text_runs(selected):
             scene(row, x, text, width, attr | curses.A_UNDERLINE)
+        if not platform.synthetic:
+            occupied = {column for cell in row_cells
+                        for column in range(cell.x, cell.x + cell.width)}
+            for x in range(platform.left, platform.right):
+                if x not in occupied:
+                    scene(platform.row, x, ' ', 1, attr | curses.A_UNDERLINE)
+
+    floor_attr = palette.attr(Style(fg=82, bold=True))
+    scene(world.floor_row, 0, ' SAFE FLOOR '.center(cols, '='), cols, floor_attr)
 
     p = world.player
     arms = '\\|/' if p.vy < 0 else '/|\\'

@@ -85,9 +85,11 @@ class _FrontierRow:
 
     def __init__(self, world: TowerWorld, nodes: list[_RouteNode]):
         self.row = nodes[0].platform.row
-        groups: dict[int, list[_RouteNode]] = {}
+        groups: dict[tuple[int, int], list[_RouteNode]] = {}
         for node in nodes:
-            groups.setdefault(node.cost, []).append(node)
+            preference = abs(node.platform.right - node.platform.left
+                             - world.platform_width(node.platform.row))
+            groups.setdefault((node.cost, preference), []).append(node)
         self.groups = []
         for cost, items in sorted(groups.items()):
             items.sort(key=lambda node: world.landing_x(node.platform, -math.inf))
@@ -151,6 +153,8 @@ class TowerWorld:
         self._history = _History(text, self.width, self.HISTORY_TOP)
         self.height = max(self.viewport_height, len(self._history) + self.HISTORY_TOP + 2)
         self.summit_row = self.start_row = self.HISTORY_TOP
+        self.floor_row = self.start_row + 3
+        self._text_bounds = (self.HISTORY_TOP, self.HISTORY_TOP)
         self.total_climb = 0
         self._configure_jump()
         self._build_route()
@@ -212,10 +216,24 @@ class TowerWorld:
                 return delay
         raise ValueError('No reachable jump between these platforms')
 
+    def platform_width(self, row: int) -> int:
+        """Prefer forgiving phrases at the base and precise footholds aloft."""
+        top, bottom = self._text_bounds
+        climbed = max(0.0, min(1.0, (bottom - row) / max(1, bottom - top)))
+        broad = min(self.width, 22)
+        narrow = min(broad, 6)
+        return round(broad + (narrow - broad) * climbed)
+
+    @property
+    def floor_visible(self) -> bool:
+        return self.camera_y <= self.floor_row < self.camera_y + self.viewport_height
+
     def _candidates(self, cells: tuple[Cell, ...], rng: random.Random) -> list[Platform]:
         groups: list[list[Cell]] = []
         for cell in cells:
-            if groups and groups[-1][-1].x + groups[-1][-1].width == cell.x:
+            # A short existing space can join words into a single phrase.
+            # Wide blank gaps remain separate; never manufacture source text.
+            if groups and cell.x - (groups[-1][-1].x + groups[-1][-1].width) <= 2:
                 groups[-1].append(cell)
             else:
                 groups.append([cell])
@@ -224,13 +242,17 @@ class TowerWorld:
             first, last = group[0], group[-1]
             full = Platform(first.y, first.x, last.x + last.width)
             candidates.append(full)
-            if full.right - full.left <= 14:
+            desired = self.platform_width(first.y)
+            if full.right - full.left <= desired:
                 continue
-            # Retain the full real run as an option for walking to a distant
-            # takeoff point; shorter alternatives make dense output less uniform.
-            for _ in range(2):
-                start = rng.randrange(len(group))
-                width = rng.randint(4, 12)
+            # Retain the full phrase as a reachability fallback. Prefer smaller
+            # windows at the current difficulty before considering that fallback.
+            last_start = len(group) - 1
+            while last_start > 0 and full.right - group[last_start].x < desired:
+                last_start -= 1
+            starts = {0, last_start, rng.randrange(last_start + 1), rng.randrange(last_start + 1)}
+            for start in sorted(starts):
+                width = desired
                 end = start
                 while end + 1 < len(group) and group[end].x + group[end].width - group[start].x < width:
                     end += 1
@@ -254,7 +276,7 @@ class TowerWorld:
                              min(self.width, math.ceil(max(source_x, target_x)) + 3), True),)
         bridges = []
         for index, row in enumerate(rows):
-            width = rng.randint(5, min(12, self.width))
+            width = max(1, min(self.width, self.platform_width(row) + rng.randint(-1, 1)))
             centre = source_x + (target_x - source_x) * (index + 1) / count
             left = min(self.width - width, max(0, round(centre - (width - 1) / 2)))
             bridges.append(Platform(row, left, left + width, True))
@@ -272,7 +294,15 @@ class TowerWorld:
         recent: list[_FrontierRow] = []
         previous: list[_RouteNode] = []
         oldest = None
-        for source_row in range(len(self._history)):
+        first = next((row for row in range(len(self._history)) if self._history.cells(row)), None)
+        if first is None:
+            self.empty = True
+            self.platforms = _Platforms()
+            return
+        last = next(row for row in range(len(self._history) - 1, first - 1, -1)
+                    if self._history.cells(row))
+        self._text_bounds = (first + self.HISTORY_TOP, last + self.HISTORY_TOP)
+        for source_row in range(first, last + 1):
             candidates = self._candidates(self._history.cells(source_row), rng)
             if not candidates:
                 continue
@@ -300,7 +330,8 @@ class TowerWorld:
                         rank = (parent.cost,
                                 abs(gap - preferred_gap) + rng.random() * 1.8
                                 + (4 if gap > self.max_step else 0)
-                                + max(0, parent.platform.right - parent.platform.left - 16) * 0.015)
+                                + abs(parent.platform.right - parent.platform.left
+                                      - self.platform_width(parent.platform.row)) * 0.2)
                         choices.append((rank, parent))
                 if choices:
                     _, parent = min(choices, key=lambda choice: choice[0])
@@ -322,7 +353,9 @@ class TowerWorld:
         if self.empty:
             self.platforms = _Platforms()
             return
-        node = min(previous, key=lambda item: (item.cost, rng.random()))
+        node = min(previous, key=lambda item: (item.cost,
+                   abs(item.platform.right - item.platform.left - self.platform_width(item.platform.row)),
+                   rng.random()))
         route = [node.platform]
         while node.parent is not None:
             route.extend(node.connectors)
@@ -332,6 +365,8 @@ class TowerWorld:
         self.summit_row = self.platforms[0].row
         self.start_row = self.platforms[-1].row
         self.total_climb = self.start_row - self.summit_row
+        self.floor_row = self.start_row + 3
+        self.height = max(self.viewport_height, self.floor_row + 1)
 
     @property
     def progress(self) -> float:
@@ -350,14 +385,14 @@ class TowerWorld:
         self._attempt_started = base is not None
         self._position_width = self.width
         self.player = Player(self.landing_x(base) if base else self.width / 2,
-                             float(base.row - 1 if base else self.HISTORY_TOP - 1),
+                             float(self.floor_row - 1),
                              grounded=base is not None)
         self.time = self.elapsed = 0.0
         self.jump_count = 0
-        self.finished = bool(base and not self.total_climb)
-        self.finish_reason = 'summit' if self.finished else ''
+        self.finished = False
+        self.finish_reason = ''
         self.best_y = self.player.y
-        self.camera_y = max(0, math.floor(self.player.y) - self.viewport_height + 3)
+        self.camera_y = max(0, self.floor_row - self.viewport_height + 1)
         self.direction = 0
         self.move_until = self.drop_until = 0.0
 
@@ -494,6 +529,15 @@ class TowerWorld:
                     p.grounded = True
                     p.jumps = 0
                     break
+        # The fixed base catches early mistakes, including a deliberate drop.
+        # Once it has scrolled away, the visible lower boundary ends the run.
+        # It is not a route platform and can never count as reaching the summit.
+        if self.floor_visible and next_y >= self.floor_row - 1:
+            next_y = float(self.floor_row - 1)
+            p.vy = 0.0
+            p.grounded = True
+            p.jumps = 0
+            landed = None
         p.y = next_y
         self.best_y = min(self.best_y, p.y)
         self.camera_y = min(self.camera_y, math.floor(p.y) - self.follow_row)
