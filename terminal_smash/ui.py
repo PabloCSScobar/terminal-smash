@@ -120,14 +120,15 @@ HELP_LINES = [
 
 TOWER_HELP_LINES = [
     'Climb from the newest output to the oldest.',
-    'Bright text and cyan bridges are platforms.',
+    'Bright, underlined output is your foothold.',
     'Dim text is the history behind your route.',
+    'Bridges appear only across unreachable gaps.',
     'A / D or arrows   run / steer in the air',
     'Space / W / up    jump (twice in the air)',
     'S / down          drop through a platform',
     'Keep climbing: the camera only follows up.',
     'Falling below the screen ends the attempt.',
-    'Reach the gold SUMMIT platform to win.',
+    'Reach the oldest highlighted text to win.',
     'R                 retry from the bottom',
     'V / C             free play / challenge',
     '?                 close help (timer paused)',
@@ -450,7 +451,8 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
     cyan = palette.attr(Style(fg=51, bold=True))
     gold = palette.attr(Style(fg=220, bold=True))
     dim = palette.attr(Style(fg=244))
-    platforms = {platform.row: platform for platform in world.visible_platforms()}
+    platforms = world.visible_platforms()
+    platform_rows = {platform.row for platform in platforms}
     cells = list(world.visible_cells())
 
     def scene(row, x, text, width, attr):
@@ -458,33 +460,42 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
         if 2 <= y < rows - 3 and 0 <= x and x + width <= cols:
             _write_run(win, y, x, text, attr)
 
-    # Skip entire wide glyphs covered by a generated bridge, including its
-    # boundaries, so replacing text can never leave half of a character.
-    background = [cell for cell in cells
-                  if not ((platform := platforms.get(cell.y)) and platform.synthetic
-                          and cell.x < platform.right and cell.x + cell.width > platform.left)]
-    for row, x, text, width, style in _text_runs(background):
+    for row, x, text, width, style in _text_runs(cells):
         scene(row, x, text, width, palette.attr(style) | curses.A_DIM)
-    for platform in platforms.values():
+    for platform in platforms:
         attr = gold if platform.row == world.summit_row else cyan
+        row_cells = [cell for cell in cells if cell.y == platform.row]
         if platform.synthetic:
-            width = platform.right - platform.left
-            bridge = '[' + '=' * max(0, width - 2) + ']'
-            if platform.row == world.summit_row and width >= 8:
-                bridge = ' SUMMIT '.center(width, '=')
-            scene(platform.row, platform.left, bridge[:width], width, attr)
-        else:
-            selected = [cell for cell in cells if cell.y == platform.row
-                        and platform.left <= cell.x and cell.x + cell.width <= platform.right]
-            for row, x, text, width, _ in _text_runs(selected):
-                scene(row, x, text, width, attr | curses.A_UNDERLINE)
+            # Emergency connectors fill only empty space. Even a horizontal
+            # bridge must keep every original glyph (including wide ones).
+            occupied = {column for cell in row_cells
+                        for column in range(cell.x, cell.x + cell.width)}
+            bridge_attr = palette.attr(Style(fg=110, bold=True))
+            start = platform.left
+            while start < platform.right:
+                if start in occupied:
+                    start += 1
+                    continue
+                end = start + 1
+                while end < platform.right and end not in occupied:
+                    end += 1
+                glyphs = ''.join('[' if x == platform.left else
+                                 ']' if x == platform.right - 1 else '='
+                                 for x in range(start, end))
+                scene(platform.row, start, glyphs, end - start, bridge_attr)
+                start = end
+        selected = [cell for cell in row_cells
+                    if cell.x < platform.right and cell.x + cell.width > platform.left]
+        for row, x, text, width, _ in _text_runs(selected):
+            scene(row, x, text, width, attr | curses.A_UNDERLINE)
 
     p = world.player
     arms = '\\|/' if p.vy < 0 else '/|\\'
     legs = '< >' if not p.grounded else ('/ \\' if int(world.time * 12) % 2 else ' | ')
-    for dx, dy, glyph in ((0, -2, 'O'), (-1, -1, arms), (-1, 0, legs)):
-        scene(round(p.y) + dy, max(0, min(cols - len(glyph), round(p.x) + dx)),
-              glyph, len(glyph), gold)
+    if not world.empty and not world.resize_blocked:
+        for dx, dy, glyph in ((0, -2, 'O'), (-1, -1, arms), (-1, 0, legs)):
+            scene(round(p.y) + dy, max(0, min(cols - len(glyph), round(p.x) + dx)),
+                  glyph, len(glyph), gold)
 
     _put(win, 0, 0, ' SCROLLBACK TOWER ', palette.attr(Style(fg=16, bg=51, bold=True)))
     timer = 'TIME ' + _tower_time(world.elapsed)
@@ -493,13 +504,23 @@ def _draw_tower(win, world: TowerWorld, palette: Palette, label: str,
     percent = min(100, progress * 100 // max(1, total))
     stats = f'CLIMBED {progress}/{total} rows  {percent}%'
     _put(win, 1, 0, stats, cyan)
-    if cols > len(stats) + len(label) + 3:
+    if world.summit_row in platform_rows and cols >= len(stats) + 9:
+        _put(win, 1, cols - 8, 'SUMMIT', gold)
+    elif cols > len(stats) + len(label) + 3:
         _put(win, 1, cols - len(label) - 1, label, dim)
     _put(win, rows - 3, 0, '-' * cols, dim)
     _put(win, rows - 2, 0, ' A/D move  SPACE/W jump  S drop  R retry', cyan)
     _put(win, rows - 1, 0, ' V free  C challenge  ? help  Esc exit', dim)
 
-    if world.finished:
+    if world.empty or world.resize_blocked:
+        message = 'No visible output to climb.'
+        detail = 'Try --demo --tower or widen the terminal.'
+        if world.resize_blocked:
+            message = 'Route clipped. Widen the terminal.'
+            detail = 'Your climb and timer are paused.'
+        _put(win, max(3, rows // 2 - 1), 1, message, gold)
+        _put(win, max(4, rows // 2), 1, detail, dim)
+    elif world.finished:
         width = min(52, cols - 2)
         left, top = (cols - width) // 2, max(2, (rows - 8) // 2)
         attr = palette.attr(Style(fg=15, bg=17, bold=True))

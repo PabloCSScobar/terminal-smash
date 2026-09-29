@@ -17,7 +17,7 @@ class TowerRenderingTests(unittest.TestCase):
     def test_camera_offsets_history_and_erases_old_sprites_and_help(self):
         world = TowerWorld('\n'.join(f'{row:04d} session output' for row in range(220)), 80, 19)
         screen = Canvas(24, 80)
-        for offset in (120, 80, 10):
+        for offset in (120, 80, world.HISTORY_TOP):
             world.camera_y = offset
             world.player.y = offset + 12
             self.draw(screen, world)
@@ -27,7 +27,7 @@ class TowerRenderingTests(unittest.TestCase):
             self.draw(screen, world)
             self.assertNotIn('HELP', '\n'.join(''.join(row) for row in screen.grid))
 
-    def test_bridge_never_leaves_half_of_an_overlapping_wide_character(self):
+    def test_emergency_bridge_preserves_every_overlapping_wide_character(self):
         world = TowerWorld(('界' * 20 + '\n') * 50, 44, 9)
         world.camera_y = world.HISTORY_TOP
         bridge = Platform(world.HISTORY_TOP + 1, 3, 11, True)
@@ -35,9 +35,8 @@ class TowerRenderingTests(unittest.TestCase):
         with patch.object(world, 'visible_platforms', return_value=[bridge]):
             self.draw(screen, world)
         row = screen.grid[3]
-        self.assertEqual(row[:3], ['界', '~', ' '])
-        self.assertEqual(''.join(row[3:11]), '[======]')
-        self.assertEqual(row[11:14], [' ', '界', '~'])
+        self.assertEqual(row[:40], ['界', '~'] * 20)
+        self.assertNotIn('[', row)
 
     def test_hud_uses_climbed_rows_and_results_fit_small_and_large_terminals(self):
         for rows, cols in ((14, 44), (24, 80), (60, 200)):
@@ -71,13 +70,65 @@ class TowerRenderingTests(unittest.TestCase):
     def test_demo_is_a_finite_history_with_a_visible_summit(self):
         for width in (44, 80, 160):
             with self.subTest(width=width):
-                world = TowerWorld(build_tower_demo(width), width, 19)
+                world = TowerWorld(build_tower_demo(width), width, 19, seed=7)
                 self.assertGreater(world.total_climb, 100)
                 self.assertEqual(world.score, 0)
                 world.camera_y = 0
                 screen = Canvas(24, width)
                 self.draw(screen, world)
-                self.assertIn('SUMMIT', '\n'.join(''.join(row) for row in screen.grid[2:-3]))
+                self.assertIn('SUMMIT', ''.join(screen.grid[1]))
+                self.assertFalse(world.platforms[0].synthetic)
+                self.assertFalse(world.platforms[-1].synthetic)
+                scene = '\n'.join(''.join(row) for row in screen.grid[2:-3])
+                self.assertIn('session started', scene)
+
+    def test_dense_output_glyphs_are_unchanged_by_highlighting_including_summit(self):
+        text = ('result: 界界 build completed successfully\n') * 70
+        world = TowerWorld(text, 80, 19, seed=17)
+        self.assertTrue(all(not platform.synthetic for platform in world.platforms))
+        screen = Canvas(24, 80)
+        # Hide the actor so the entire scene can be compared with the source.
+        world.player.y = -100
+        for camera in (0, 25, 50):
+            world.camera_y = camera
+            expected = Canvas(24, 80)
+            for cell in world.visible_cells():
+                expected.addstr(cell.y - camera + 2, cell.x, cell.char)
+            self.draw(screen, world)
+            self.assertEqual(screen.grid[2:-3], expected.grid[2:-3])
+
+    def test_empty_history_shows_message_without_fabricated_platforms(self):
+        for text in ('', '\n' * 100, '   \t\n' * 30):
+            world = TowerWorld(text, 80, 19)
+            screen = Canvas(24, 80)
+            self.draw(screen, world)
+            rendered = '\n'.join(''.join(row) for row in screen.grid)
+            self.assertIn('No visible output to climb.', rendered)
+            self.assertNotIn('[===', rendered)
+            self.assertFalse(world.platforms)
+
+    def test_horizontal_gap_connector_and_real_text_on_same_row_both_render(self):
+        world = TowerWorld(' ' * 70 + 'TOP\nBOTTOM', 80, 19, seed=5)
+        world.camera_y = 0
+        world.player.y = -100
+        self.assertTrue(any(platform.synthetic for platform in world.platforms))
+        screen = Canvas(24, 80)
+        self.draw(screen, world)
+        row = ''.join(screen.grid[world.start_row + 2])
+        self.assertTrue(row.startswith('BOTTOM'))
+        self.assertIn('=', row[6:70])
+        self.assertEqual(''.join(screen.grid[world.summit_row + 2][70:73]), 'TOP')
+
+    def test_clipped_route_explains_that_the_attempt_is_paused(self):
+        world = TowerWorld('old output\n' + '\n' * 15 + ' ' * 60 + 'new output',
+                           80, 19, seed=5)
+        world.resize(44, 19)
+        self.assertTrue(world.resize_blocked)
+        screen = Canvas(24, 44)
+        self.draw(screen, world)
+        rendered = '\n'.join(''.join(row) for row in screen.grid)
+        self.assertIn('Route clipped. Widen the terminal.', rendered)
+        self.assertIn('Your climb and timer are paused.', rendered)
 
 
 if __name__ == '__main__':

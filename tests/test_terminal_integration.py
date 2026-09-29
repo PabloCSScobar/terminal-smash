@@ -291,6 +291,61 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
+    def test_tower_file_highlights_original_output_without_scaffolding(self):
+        # Inspect actual curses attributes, not emitted ANSI bytes: terminals
+        # can reuse prior attributes, making byte-pattern checks misleading.
+        child = (
+            "import curses, json, os, sys\n"
+            "from pathlib import Path\n"
+            "from terminal_smash import cli, ui\n"
+            "draw = ui._draw_tower\n"
+            "state = Path(os.environ['XDG_STATE_HOME']) / 'tower-text.json'\n"
+            "def observe(win, world, *args, **kwargs):\n"
+            "    draw(win, world, *args, **kwargs)\n"
+            "    rows, columns = win.getmaxyx()\n"
+            "    scene = [win.instr(row, 0, columns - 1).decode('utf-8', errors='replace') "
+            "for row in range(2, rows - 3)]\n"
+            "    highlights = []\n"
+            "    for row in range(2, rows - 3):\n"
+            "        for column in range(columns - 1):\n"
+            "            cell = win.inch(row, column)\n"
+            "            if cell & curses.A_UNDERLINE:\n"
+            "                highlights.append((row - 2 + world.camera_y - world.HISTORY_TOP, "
+            "column, chr(cell & curses.A_CHARTEXT)))\n"
+            "    temporary = state.with_suffix('.tmp')\n"
+            "    temporary.write_text(json.dumps(dict(scene=scene, highlights=highlights)))\n"
+            "    temporary.replace(state)\n"
+            "ui._draw_tower = observe\n"
+            "raise SystemExit(cli.main(['--file', sys.argv[1], '--tower']))\n"
+        )
+        source_lines = [f"build_{row:03d} compile_module completed successfully using cached objects"
+                        for row in range(100)]
+        with tempfile.TemporaryDirectory(prefix="smash-tower-text-") as temporary:
+            source = Path(temporary) / "output.txt"
+            source.write_text("\n".join(source_lines), encoding="utf-8")
+            terminal = Terminal([sys.executable, "-c", child, str(source)])
+            state_file = Path(terminal.state_directory.name) / "tower-text.json"
+            try:
+                terminal.until(b"SCROLLBACK TOWER")
+                _eventually(lambda: state_file.exists())
+                state = json.loads(state_file.read_text())
+                self.assertGreater(len(state["highlights"]), 10,
+                                   "Actual output must supply visible, highlighted landing surfaces")
+                for source_row, column, glyph in state["highlights"]:
+                    self.assertGreaterEqual(source_row, 0)
+                    self.assertLess(source_row, len(source_lines))
+                    self.assertLess(column, len(source_lines[source_row]))
+                    self.assertEqual(glyph, source_lines[source_row][column])
+                scene = "\n".join(state["scene"])
+                self.assertTrue(any(line in scene for line in source_lines))
+                self.assertNotIn("[", scene, "Dense text must not be replaced with scaffold platforms")
+                self.assertNotIn("=", scene)
+                terminal.send(b"\x1b")
+                self.assertEqual(terminal.finish(), 0)
+                self.assertNotIn(b"Traceback", bytes(terminal.output))
+            finally:
+                terminal.close()
+
     def test_gravity_and_automatic_grip_survive_reset_challenge_and_resize(self):
         # Full repaint makes the actual PTY status readable as complete text;
         # ncurses normally emits only the changed "N" / "FF" bytes on toggles.
