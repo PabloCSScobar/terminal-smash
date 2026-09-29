@@ -95,7 +95,7 @@ def _launch_popup(
         raise UserError(
             "To smash the text in your terminal, enter tmux:\n"
             "  terminal-smash --session\n"
-            "Then press Ctrl+b, followed by Shift+s (after installation),\n"
+            "Then press Ctrl+b, followed by Shift+s for free play or Shift+t for Tower (after installation),\n"
             "or run: terminal-smash\n"
             "Demo without tmux: terminal-smash --demo"
         )
@@ -207,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.session:
             _tmux_version()
             if os.environ.get("TMUX"):
-                raise UserError("You are already in tmux. Press Ctrl+b, then Shift+s, or run terminal-smash.")
+                raise UserError("You are already in tmux. Press Ctrl+b, then Shift+s for free play or Shift+t for Tower.")
             os.execvp("tmux", ["tmux", "new-session", "-A", "-s", "smash"])
             return 0
         if args.demo:

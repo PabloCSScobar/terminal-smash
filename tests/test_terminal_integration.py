@@ -932,6 +932,10 @@ class TerminalIntegrationTests(unittest.TestCase):
                 # hide its short-lived status on a busy host.
                 terminal.send(b"k?")
                 terminal.until(b"HELP", after=offset)
+                # Ncurses may split an incremental label with ANSI sequences;
+                # ask tmux to repaint the paused screen before inspecting it.
+                offset = len(terminal.output)
+                tmux("refresh-client", "-t", client)
                 terminal.until(b"charging", after=offset)
                 self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
                 offset = len(terminal.output)
@@ -942,6 +946,23 @@ class TerminalIntegrationTests(unittest.TestCase):
                 self.assertNotIn(b"Traceback", bytes(terminal.output))
                 after_heartbeat = heartbeat.read_text()
                 _eventually(lambda: heartbeat.read_text() not in ("", after_heartbeat))
+
+                # The direct Tower binding opens the climbing mode immediately,
+                # without a typed command or the in-game mode toggle.
+                offset = len(terminal.output)
+                terminal.send(b"\x02T")  # Default tmux prefix Ctrl+b, then Shift+t.
+                terminal.until(b"SCROLLBACK TOWER", after=offset)
+                terminal.until(b"SAFE FLOOR", after=offset)
+                terminal.until(b"CLIMBED", after=offset)
+                self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
+                after_heartbeat = heartbeat.read_text()
+                _eventually(lambda: heartbeat.read_text() not in ("", after_heartbeat))
+                offset = len(terminal.output)
+                terminal.send(b"\x1b")
+                terminal.until(b"SMASH_SENTINEL_UNCHANGED_927461", after=offset)
+                self.assertEqual(tmux("capture-pane", "-p", "-e", "-t", pane).stdout, before)
+                self.assertIsNone(terminal.process.poll())
+                self.assertNotIn(b"Traceback", bytes(terminal.output))
             finally:
                 if popup is not None:
                     if popup.poll() is None:

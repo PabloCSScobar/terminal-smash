@@ -31,7 +31,7 @@ sudo apt install python3 tmux
 terminal-smash --demo
 ```
 
-No pip packages are needed. The installer uses `~/.local`, adds a tmux shortcut and backs up your tmux configuration before changing it. If the command is not found, use `~/.local/bin/terminal-smash` or add `~/.local/bin` to your `PATH`.
+No pip packages are needed. The installer uses `~/.local`, adds tmux shortcuts and backs up your tmux configuration before changing it. If the command is not found, use `~/.local/bin/terminal-smash` or add `~/.local/bin` to your `PATH`.
 
 ## Play
 
@@ -43,7 +43,7 @@ terminal-smash --tower         # Climb the retained history of your tmux pane
 terminal-smash --demo --tower  # Try a complete tower without tmux
 ```
 
-Inside tmux, press **Ctrl+b**, then **Shift+s** to play with the visible text. Press **Esc** to return to your shell. With a custom tmux prefix, use it instead of Ctrl+b.
+Inside tmux, press **Ctrl+b**, release it, then press **Shift+s** to play with the visible text or **Shift+t** to open Tower with the pane's full retained history. Press **Esc** to return to your shell. With a custom tmux prefix, use it instead of Ctrl+b.
 
 **Gravity is OFF by default:** untouched letters stay in place. Press **G** to change it and restart the scene, or launch with `--gravity on`.
 
@@ -51,7 +51,7 @@ Press **C** for a 30-second challenge with respawning `ERROR` enemies and local 
 
 ### Scrollback Tower
 
-Run `terminal-smash --tower` inside tmux to climb from the newest output to the oldest retained line. The game takes a snapshot of the pane's scrollback before opening; your shell keeps running. History that tmux has already discarded cannot be recovered. Snapshots are limited to 2 MiB, and an oversized history produces an error instead of silently shortening the tower.
+Press **Ctrl+b**, then **Shift+t**, or run `terminal-smash --tower` inside tmux to climb from the newest output to the oldest retained line. The game takes a snapshot of the pane's scrollback before opening; your shell keeps running. History that tmux has already discarded cannot be recovered. Snapshots are limited to 2 MiB, and an oversized history produces an error instead of silently shortening the tower.
 
 Bright, underlined fragments of your actual output are solid from above; dim text stays in the background. The route picks reachable text with varied spacing and horizontal positions. Footholds start broad and narrow toward the summit, within the original text available. Their width depends on how high you climb, not on elapsed time. Artificial bridges appear only where the text leaves an otherwise unreachable gap. The route climbs through the newest text to the oldest highlighted fragment, marked in gold. Empty output shows a message instead of creating a tower.
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -310,6 +313,15 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("play a 30-second survival challenge", help_result.stdout)
             self.assertIn("--file FILE", help_result.stdout)
             self.assertIn("Installed:", first.stdout)
+            fragment = (root / "config" / "tmux.conf").read_text()
+            bindings = [line for line in fragment.splitlines() if line.startswith("bind-key")]
+            self.assertEqual(len(bindings), 2)
+            for key, tower in (("S", False), ("T", True)):
+                binding = next(line for line in bindings if line.startswith(f"bind-key -T prefix {key} "))
+                self.assertIn("run-shell -b ", binding)
+                self.assertIn("--pane '#{pane_id}'", binding)
+                self.assertIn("--client '#{client_name}'", binding)
+                self.assertEqual("--tower" in binding, tower)
             second = self.install(root)
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertEqual(config.read_text(), installed_config)
@@ -321,6 +333,83 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse(launcher.exists())
             self.assertFalse((root / "config" / "tmux.conf").exists())
             self.assertTrue(list(root.glob(".tmux.conf.terminal-smash.bak-*")))
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is not installed")
+    def test_upgrade_reloads_both_shortcuts_and_uninstall_preserves_custom_binding(self):
+        with tempfile.TemporaryDirectory(prefix="terminal-smash-bindings-") as temporary:
+            root = Path(temporary)
+            socket = root / "tmux.sock"
+            prefix = root / "local '$"
+            game = prefix / "share" / "terminal-smash" / "terminal-smash"
+            env = os.environ.copy()
+            env.pop("TMUX", None)
+            env.pop("TMUX_PANE", None)
+
+            def tmux(*arguments, check=True):
+                return subprocess.run(
+                    ["tmux", "-S", str(socket), *arguments], env=env,
+                    text=True, capture_output=True, check=check, timeout=5,
+                )
+
+            command = [
+                str(ROOT / "install.sh"), "--prefix", str(prefix),
+                "--config-dir", str(root / "config"), "--tmux-config", str(root / ".tmux.conf"),
+            ]
+
+            def install(*arguments):
+                result = subprocess.run(
+                    [*command, *arguments], env=env, text=True, capture_output=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            try:
+                tmux("-f", "/dev/null", "new-session", "-d", "-s", "installer", "sleep 60")
+                env["TMUX"] = tmux("display-message", "-p", "#{socket_path},#{pid},0").stdout.strip()
+                install()
+                for key, tower in (("S", False), ("T", True)):
+                    binding = tmux("list-keys", "-T", "prefix", key).stdout
+                    self.assertIn("terminal-smash", binding)
+                    self.assertIn("--pane", binding)
+                    self.assertIn("--client", binding)
+                    self.assertEqual("--tower" in binding, tower)
+
+                # Model an existing managed installation from before Tower had
+                # its own shortcut, then exercise its actual update/reload path.
+                fragment = root / "config" / "tmux.conf"
+                old_fragment = "\n".join(
+                    line for line in fragment.read_text().splitlines()
+                    if not line.startswith("bind-key -T prefix T ")
+                ) + "\n"
+                fragment.write_text(old_fragment)
+                marker = prefix / "share" / "terminal-smash" / ".terminal-smash-install.json"
+                manifest = json.loads(marker.read_text())
+                manifest["fragment_sha256"] = hashlib.sha256(fragment.read_bytes()).hexdigest()
+                marker.write_text(json.dumps(manifest))
+                tmux("unbind-key", "-T", "prefix", "S")
+                tmux("unbind-key", "-T", "prefix", "T")
+                install()
+                self.assertNotIn("--tower", tmux("list-keys", "-T", "prefix", "S").stdout)
+                self.assertIn("--tower", tmux("list-keys", "-T", "prefix", "T").stdout)
+
+                install("--uninstall")
+                for key in ("S", "T"):
+                    self.assertNotEqual(tmux("list-keys", "-T", "prefix", key, check=False).returncode, 0)
+
+                install()
+                tmux("bind-key", "-T", "prefix", "T", "display-message", "my custom shortcut")
+                install("--uninstall")
+                self.assertNotEqual(tmux("list-keys", "-T", "prefix", "S", check=False).returncode, 0)
+                self.assertIn("my custom shortcut", tmux("list-keys", "-T", "prefix", "T").stdout)
+
+                # A user can reuse this launcher in a custom shortcut. Matching
+                # the executable alone must not make that shortcut installer-owned.
+                install()
+                tmux("bind-key", "-T", "prefix", "T", "run-shell", "-b", shlex.join([str(game), "--challenge"]))
+                install("--uninstall")
+                self.assertNotEqual(tmux("list-keys", "-T", "prefix", "S", check=False).returncode, 0)
+                self.assertIn("--challenge", tmux("list-keys", "-T", "prefix", "T").stdout)
+            finally:
+                tmux("kill-server", check=False)
 
     def test_installer_refuses_foreign_launcher(self):
         with tempfile.TemporaryDirectory() as temporary:
