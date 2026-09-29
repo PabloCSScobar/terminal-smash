@@ -59,7 +59,7 @@ Use **A/D** or the arrow keys to steer, **Space/W/↑** to jump twice, and **S/�
 
 The chase adapts to the window height and slows while you cross unusually wide footholds. Jump routes leave room for the camera to move during landing. Help and a clipped or undersized window pause the chase along with the game.
 
-Movement bridges the keyboard's initial repeat delay so holding an arrow does not briefly stop the player. Ordinary terminals do not report key releases: an isolated tap therefore has up to 0.65 seconds of movement grace, while repeated input expires 0.12 seconds after the last repeat. Airborne momentum is preserved.
+A tap of A/D or an arrow gives a short step of about 60 ms; rapid repeats produce continuous running. Repeated input expires within 60–120 ms of the last repeat, and a grounded player stops without an extra slide. Ordinary terminals do not report key releases, so a pause before the keyboard's first repeat can still occur. Airborne momentum is preserved.
 
 **R** retries the same route from the bottom and **?** pauses the game and timer. A new launch chooses a new route. Resizing preserves your attempt; if narrowing the window clips text needed by the route, the game pauses until you widen it. Wall grips, attacks, falling text and the top teleport are disabled in Tower. **V** switches between Tower and free play; **C** enters challenge mode. Switching modes starts a new attempt. The V shortcut uses the text already loaded; launch with `--tower` to capture the full tmux history rather than only the visible screen.
 

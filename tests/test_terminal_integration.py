@@ -249,31 +249,40 @@ class TerminalIntegrationTests(unittest.TestCase):
             terminal.send(b"R")
             start = tower_state(lambda state: state["elapsed"] < 0.1 and state["grounded"])
 
-            # Ordinary curses only receives presses. Reproduce the initial
-            # keyboard-repeat delay using actual application-mode arrow bytes:
-            # movement must remain smooth during the otherwise silent gap.
+            # A lone application-mode arrow must make a precise nudge, rather
+            # than guessing that the key stays held until autorepeat starts.
             direction = 1 if start["x"] < 50 else -1
             arrow = b"\x1bOC" if direction > 0 else b"\x1bOD"
             terminal.send(arrow)
-            previous = start
-            for _ in range(3):
-                terminal.pump(0.15)
+            terminal.pump(0.12)
+            tapped = tower_state(lambda state: state["elapsed"] > start["elapsed"])
+            distance = (tapped["x"] - start["x"]) * direction
+            self.assertGreater(distance, 1.5)
+            self.assertLess(distance, 3.5)
+            self.assertEqual(tapped["vx"], 0)
+            terminal.pump(0.25)
+            waiting = tower_state(lambda state: state["elapsed"] > tapped["elapsed"])
+            self.assertEqual(waiting["x"], tapped["x"])
+
+            # Subsequent actual repeats confirm the hold. These must run
+            # continuously until events stop, then promptly come to rest.
+            previous = waiting
+            for _ in range(6):
+                terminal.send(arrow)
+                terminal.pump(0.02)
                 moving = tower_state(lambda state: state["elapsed"] > previous["elapsed"])
                 self.assertEqual(moving["vx"], direction * 45)
-                self.assertGreater((moving["x"] - previous["x"]) * direction, 4)
+                self.assertGreater((moving["x"] - previous["x"]) * direction, 0.5)
                 previous = moving
-            for _ in range(4):
-                terminal.send(arrow)
-                terminal.pump(0.035)
-            terminal.pump(0.3)
-            stopped = tower_state(lambda state: state["elapsed"] > previous["elapsed"] + 0.3)
-            self.assertLess(abs(stopped["vx"]), 0.6)
+            terminal.pump(0.16)
+            stopped = tower_state(lambda state: state["elapsed"] > previous["elapsed"] + 0.15)
+            self.assertEqual(stopped["vx"], 0)
             terminal.pump(0.1)
             still = tower_state(lambda state: state["elapsed"] > stopped["elapsed"])
-            self.assertLess(abs(still["x"] - stopped["x"]), 0.04)
+            self.assertEqual(still["x"], stopped["x"])
 
             # Restart must discard the old hold rather than drive the new
-            # attempt for the rest of its initial key-repeat grace.
+            # attempt for the rest of the preceding movement pulse.
             terminal.send(b"aR")
             start = tower_state(lambda state: state["elapsed"] < 0.1)
             terminal.pump(0.2)
