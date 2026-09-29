@@ -7,7 +7,7 @@ from unittest.mock import patch
 from terminal_smash.capture import Cell
 from terminal_smash.model import World
 from terminal_smash.records import arena_key
-from terminal_smash.ui import RoundRecord, TerrainLayer, _actor_pose, _text_runs
+from terminal_smash.ui import RoundRecord, TerrainLayer, _actor_pose, _draw, _text_runs
 
 
 class Canvas:
@@ -32,6 +32,9 @@ class Canvas:
             if width == 2:
                 self.grid[y][x + 1] = '~'  # The occupied trailing column.
             x += width
+
+    def noutrefresh(self):
+        pass
 
     def overwrite(self, destination):
         destination.grid = [row[:] for row in self.grid]
@@ -113,6 +116,37 @@ class RenderingTests(unittest.TestCase):
         self.assertEqual(len(self.screen.grid[0]), 45)
         self.assertEqual(self.screen.grid[6][20], 'N')
 
+    def test_health_bar_follows_actor_and_hud_survives_ceiling_and_small_screen(self):
+        for rows, cols in ((14, 44), (24, 80)):
+            with self.subTest(rows=rows, cols=cols):
+                self.screen = Canvas(rows, cols)
+                self.world = World([], cols, rows - 4)
+                self.world.player.x, self.world.player.y = 12, 7
+                self.world.player.hp = 3
+                with patch('terminal_smash.ui.curses.doupdate'):
+                    _draw(self.screen, self.world, self.palette, '', False, self.layer)
+                    self.assertIn('HP 3/5', ''.join(self.screen.grid[0]))
+                    self.assertIn('[###--]', ''.join(self.screen.grid[6]))
+                    self.world.player.x, self.world.player.y = cols - 2, 2
+                    self.world.grip_enabled = True
+                    self.world.grip_surface = 'ceiling'
+                    self.world.player.hp = 1
+                    _draw(self.screen, self.world, self.palette, '', False, self.layer)
+                    self.assertIn('HP 1/5 [#----]', ''.join(self.screen.grid[0]))
+                    self.assertNotIn('[###--]', ''.join(self.screen.grid[6]))
+                    self.assertIn('E grip ON', ''.join(self.screen.grid[-1]))
+
+    def test_death_overlay_has_restart_and_correct_mode_switch(self):
+        for duration, switch in ((None, 'challenge'), (30, 'free play')):
+            self.world = World([], 80, 20, duration=duration)
+            self.world.player.hp = 0
+            self.world._finish('dead')
+            with patch('terminal_smash.ui.curses.doupdate'):
+                _draw(self.screen, self.world, self.palette, '', False, self.layer)
+            visible = '\n'.join(''.join(row) for row in self.screen.grid)
+            self.assertIn('GAME OVER - NO HEALTH!', visible)
+            self.assertIn('[R] retry  [C] ' + switch, visible)
+
 
 class RoundRecordTests(unittest.TestCase):
     def world(self, duration=30):
@@ -132,17 +166,18 @@ class RoundRecordTests(unittest.TestCase):
             self.assertEqual(record.best, 120)
             self.assertTrue(record.new_record)
 
-    def test_generated_enemy_round_uses_its_own_record_and_reset_keeps_key(self):
+    def test_respawns_and_reset_keep_the_same_record_key(self):
         world = self.world()
         with patch('terminal_smash.ui.load_best', return_value=0):
             key = RoundRecord(world).key
-            old_key = arena_key(list(world.original), world.width, world.height)
-            self.assertNotEqual(key, old_key)
-            self.assertEqual(key, arena_key(list(world.original), world.width, world.height,
-                                           generated_enemies=3))
+            self.assertEqual(key, arena_key(list(world.original), world.width, world.height))
             world.destroy(world.width / 2, world.height / 2, world.width, world.height,
                           enemy_damage=2)
-            self.assertTrue(world.finished)
+            self.assertFalse(world.finished)
+            self.assertFalse(world.enemies)
+            before = world.generated_enemies
+            world.update(2.1)
+            self.assertGreater(world.generated_enemies, before)
             self.assertEqual(RoundRecord(world).key, key)
             world.reset()
             self.assertEqual(RoundRecord(world).key, key)

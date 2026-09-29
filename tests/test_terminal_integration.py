@@ -185,7 +185,7 @@ class TerminalIntegrationTests(unittest.TestCase):
         finally:
             terminal.close()
 
-    def test_gravity_toggle_survives_reset_challenge_and_resize(self):
+    def test_gravity_and_grip_survive_reset_challenge_and_resize(self):
         # Full repaint makes the actual PTY status readable as complete text;
         # ncurses normally emits only the changed "N" / "FF" bytes on toggles.
         # The CLI, input loop, world, record store and curses renderer are real.
@@ -204,15 +204,18 @@ class TerminalIntegrationTests(unittest.TestCase):
             offset = len(terminal.output)
             terminal.send(b"G")
             terminal.until(b"falling OFF", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"E")
+            terminal.until(b"E grip ON", after=offset)
 
             # Charging the blast makes the reset observable, even though the
             # gravity status itself is expected to remain unchanged.
             offset = len(terminal.output)
             terminal.send(b"k")
-            terminal.until(b"falling OFF | K blast recharging", after=offset)
+            terminal.until(b"falling OFF | E grip ON | K blast recharging", after=offset)
             offset = len(terminal.output)
             terminal.send(b"R")
-            terminal.until(b"falling OFF | K blast ready", after=offset)
+            terminal.until(b"falling OFF | E grip ON | K blast ready", after=offset)
 
             for key, mode in ((b"C", b"CHALLENGE"), (b"c", b"FREE PLAY")):
                 offset = len(terminal.output)
@@ -220,6 +223,7 @@ class TerminalIntegrationTests(unittest.TestCase):
                 terminal.until(mode, after=offset)
                 mode_offset = terminal.output.index(mode, offset)
                 terminal.until(b"falling OFF", after=mode_offset)
+                terminal.until(b"E grip ON", after=mode_offset)
 
             # Passing through an unplayable size removes the old footer, so
             # the next OFF label must come from the rebuilt larger world.
@@ -229,9 +233,14 @@ class TerminalIntegrationTests(unittest.TestCase):
             offset = len(terminal.output)
             terminal.resize(32, 120)
             terminal.until(b"falling OFF", after=offset)
+            terminal.until(b"E grip ON", after=offset)
             offset = len(terminal.output)
             terminal.send(b"g")
             terminal.until(b"falling ON", after=offset)
+            terminal.until(b"E grip ON", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"e")
+            terminal.until(b"E grip OFF", after=offset)
 
             terminal.send(b"\x1b")
             self.assertEqual(terminal.finish(), 0)
@@ -342,12 +351,22 @@ class TerminalIntegrationTests(unittest.TestCase):
             terminal.close()
 
     def test_completed_challenge_record_survives_immediate_exit(self):
-        # One natural enemy sits directly in the initial blast radius. Both keys
-        # arrive in one read batch, so saving once per rendered frame is too late.
-        # Using ERROR avoids supplemental enemies in an otherwise empty round.
+        # Trigger a fatal real enemy contact during K. K and Esc arrive in one
+        # input batch, so saving only once per rendered frame would lose it.
+        # Ordinary clear no longer ends a challenge: enemies keep arriving.
         child = (
-            "from terminal_smash import ui; "
-            "ui.run('\\n' + ' ' * 32 + 'ERROR', label='single-error', challenge=True)"
+            "from terminal_smash import ui\n"
+            "from terminal_smash.model import World, Enemy\n"
+            "blast = World.blast\n"
+            "def fatal_contact(world):\n"
+            "    blast(world)\n"
+            "    world.player.hp = 1\n"
+            "    world.time = max(2.0, world.time)\n"
+            "    world.hurt_until = world.dash_until = 0\n"
+            "    world.enemies[:] = [Enemy(world.player.x, world.player.y)]\n"
+            "    world.update(1 / 120)\n"
+            "World.blast = fatal_contact\n"
+            "ui.run('\\n' + ' ' * 36 + 'X', label='fatal-contact', challenge=True)\n"
         )
         terminal = Terminal([sys.executable, "-c", child])
         try:
@@ -359,6 +378,134 @@ class TerminalIntegrationTests(unittest.TestCase):
             records = json.loads(record_file.read_text(encoding="utf-8"))["records"]
             self.assertEqual(len(records), 1)
             self.assertGreater(next(iter(records.values()))["score"], 0)
+            self.assertNotIn(b"Traceback", bytes(terminal.output))
+        finally:
+            terminal.close()
+
+    def test_health_damage_game_over_and_reset_in_real_terminal(self):
+        # Put an actual enemy in contact on each K, without waiting through the
+        # damage cooldown. The real collision code decides HP, knockback and
+        # death; the real input loop saves the result and handles restart.
+        child = (
+            "from terminal_smash import ui\n"
+            "from terminal_smash.model import World, Enemy\n"
+            "def contact(world):\n"
+            "    if world.finished: return\n"
+            "    world.time = max(2.0, world.time)\n"
+            "    world.hurt_until = world.dash_until = 0\n"
+            "    world.player.vx = world.player.vy = 0\n"
+            "    world.enemies[:] = [Enemy(world.player.x, world.player.y)]\n"
+            "    world.update(1 / 120)\n"
+            "World.blast = contact\n"
+            "draw = ui._draw\n"
+            "def redraw(win, *args, **kwargs):\n"
+            "    win.redrawwin()\n"
+            "    draw(win, *args, **kwargs)\n"
+            "ui._draw = redraw\n"
+            "ui.run('plain session output', label='health', challenge=True)\n"
+        )
+        terminal = Terminal([sys.executable, "-c", child], rows=30, columns=100)
+        try:
+            terminal.until(b"HP 5/5")
+            offset = len(terminal.output)
+            terminal.send(b"k")
+            terminal.until(b"HP 4/5", after=offset)
+            offset = len(terminal.output)
+            terminal.send(b"kkkk")
+            terminal.until(b"GAME OVER - NO HEALTH!", after=offset)
+            terminal.until(b"HP 0/5", after=offset)
+            record_file = Path(terminal.state_directory.name) / "terminal-smash" / "records.json"
+            saved = record_file.read_bytes()
+            offset = len(terminal.output)
+            terminal.send(b"ddwJkLXT")
+            terminal.pump(0.1)
+            self.assertEqual(record_file.read_bytes(), saved)
+            self.assertNotIn(b"HP 5/5", terminal.output[offset:])
+
+            offset = len(terminal.output)
+            terminal.send(b"R")
+            terminal.until(b"HP 5/5", after=offset)
+            terminal.until(b"CHALLENGE", after=offset)
+            self.assertNotIn(b"GAME OVER", terminal.output[offset:])
+            self.assertEqual(record_file.read_bytes(), saved)
+
+            # Health stays visible in the minimum supported viewport too.
+            offset = len(terminal.output)
+            terminal.resize(14, 44)
+            terminal.until(b"HP 5/5", after=offset)
+            terminal.send(b"\x1b")
+            self.assertEqual(terminal.finish(), 0)
+            self.assertNotIn(b"Traceback", bytes(terminal.output))
+        finally:
+            terminal.close()
+
+    def test_real_grip_controls_climb_hang_move_and_release(self):
+        # Choose only a reproducible starting position. Input, traversal,
+        # gravity and rendering remain production code; telemetry observes
+        # resulting positions rather than replacing the movement methods.
+        child = (
+            "import json, os\n"
+            "from pathlib import Path\n"
+            "from terminal_smash import ui\n"
+            "create = ui._new_world\n"
+            "def near_wall(*args, **kwargs):\n"
+            "    world = create(*args, **kwargs)\n"
+            "    world.player.x, world.player.y = 1.0, 5.0\n"
+            "    return world\n"
+            "ui._new_world = near_wall\n"
+            "draw = ui._draw\n"
+            "state = Path(os.environ['XDG_STATE_HOME']) / 'motion.json'\n"
+            "def observe(win, world, *args, **kwargs):\n"
+            "    draw(win, world, *args, **kwargs)\n"
+            "    temporary = state.with_suffix('.tmp')\n"
+            "    temporary.write_text(json.dumps(dict(x=world.player.x, y=world.player.y, "
+            "surface=world.grip_surface, enabled=world.grip_enabled)))\n"
+            "    temporary.replace(state)\n"
+            "ui._draw = observe\n"
+            "ui.run('plain text', label='grip-control')\n"
+        )
+        terminal = Terminal([sys.executable, "-c", child])
+        state_file = Path(terminal.state_directory.name) / "motion.json"
+
+        def motion(check):
+            def inspect():
+                terminal.pump(0.015)
+                if not state_file.exists():
+                    return None
+                state = json.loads(state_file.read_text())
+                return state if check(state) else None
+            return _eventually(inspect, timeout=3)
+
+        try:
+            terminal.until(b"TERMINAL SMASH")
+            terminal.send(b"E")
+            attached = motion(lambda state: state["surface"] == "left")
+            self.assertTrue(attached["enabled"])
+            terminal.send(b"s")
+            descended = motion(lambda state: state["y"] > attached["y"] + 0.5)
+            self.assertEqual(descended["surface"], "left")
+            terminal.send(b"w")
+            climbed = motion(lambda state: state["y"] < descended["y"] - 0.5)
+            self.assertEqual(climbed["surface"], "left")
+
+            # Repeated W is deliberate key repeat. A single press must not
+            # teleport from the lower wall to the ceiling.
+            for _ in range(8):
+                terminal.send(b"w")
+                terminal.pump(0.06)
+                state = json.loads(state_file.read_text())
+                if state["surface"] == "ceiling":
+                    break
+            hanging = motion(lambda state: state["surface"] == "ceiling")
+            self.assertEqual(hanging["y"], 2.0)
+            terminal.send(b"d")
+            moved = motion(lambda state: state["x"] > hanging["x"] + 0.5)
+            self.assertEqual(moved["surface"], "ceiling")
+            terminal.send(b" ")
+            released = motion(lambda state: state["surface"] == "" and state["y"] > 2.1)
+            self.assertTrue(released["enabled"], "Jump detaches without disabling grip mode")
+            terminal.send(b"\x1b")
+            self.assertEqual(terminal.finish(), 0)
             self.assertNotIn(b"Traceback", bytes(terminal.output))
         finally:
             terminal.close()

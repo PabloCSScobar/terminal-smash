@@ -7,6 +7,7 @@ import math
 import random
 
 from .capture import Cell, Style
+from .traversal import TraversalMixin
 
 
 @dataclass
@@ -18,6 +19,8 @@ class Player:
     facing: int = 1
     grounded: bool = False
     jumps: int = 0
+    hp: int = 5
+    max_hp: int = 5
 
 
 @dataclass
@@ -82,7 +85,7 @@ class Enemy:
     cells: list[Cell] = field(default_factory=list, repr=False)
 
 
-class World:
+class World(TraversalMixin):
     """Coordinates are character cells; player.y is the row occupied by feet."""
 
     def __init__(self, cells: list[Cell], width: int, height: int,
@@ -138,9 +141,14 @@ class World:
         self._dash_direction = 1
         self._next_trail = 0.0
         self._pending_falling = 0
+        self._reset_traversal()
+        self.enemy_target = min(8, (self.width // 7) * ((self.height - 1) // 2))
+        self.next_enemy_spawn = 2.0
         self._spawn_enemies()
+        self._separate_enemies()
         if self.duration is not None and not self.enemies:
             self._spawn_challenge_enemies()
+        self.enemy_target = min(self.enemy_target, max(3, len(self.enemies)))
         self.terrain_revision += 1
         if self.duration == 0:
             self._finish("time")
@@ -151,7 +159,7 @@ class World:
             return bool(cell and (cell.char.isalnum() or cell.char == "_"))
 
         for (x, y), cell in sorted(list(self.cells.items()), key=lambda item: (item[0][1], item[0][0])):
-            if len(self.enemies) >= 8:
+            if len(self.enemies) >= self.enemy_target:
                 break
             if cell.char.upper() != "E":
                 continue
@@ -167,22 +175,80 @@ class World:
             source = [self._remove((c.x, c.y)) for c in letters]
             self.enemies.append(Enemy(float(x + 2), float(y + 1), cells=source))
 
-    def _spawn_challenge_enemies(self) -> None:
-        """Give captured challenges targets even when their text has no ERROR.
+    @staticmethod
+    def _enemy_overlap(x: float, y: float, other: Enemy) -> bool:
+        # Check the rendered seven-column label and two-row body, so rounding
+        # fractional physics coordinates cannot merge two displayed actors.
+        return abs(round(x) - round(other.x)) < 7 and abs(round(y) - round(other.y)) < 2
 
-        These actors own new letters, so spawning never removes snapshot text.
-        Keep their feet at least two rows below the starting player, including
-        the smallest arena; the positions are deterministic across resets.
-        """
-        style = Style(fg=196, bold=True)
-        for index in range(3):
-            x = 2 + round((self.width - 5) * index / 2)
-            y = max(4, round((self.height - 2) * (index + 1) / 4))
-            letters = [Cell(x - 2 + offset, y - 1, char, style)
-                       for offset, char in enumerate("ERROR")]
-            self.enemies.append(Enemy(float(x), float(y), cells=letters))
-            self.total += len(letters)
-            self.generated_enemies += 1
+    def _enemy_position(self, preferred: tuple[float, float], *,
+                        avoid_player: bool, others: list[Enemy]) -> tuple[float, float] | None:
+        """Search a bounded, deterministic grid for a free full sprite footprint."""
+        columns = min(9, self.width // 7)
+        rows = min(9, (self.height - 1) // 2)
+        xs = {3 + round((self.width - 7) * index / max(1, columns - 1))
+              for index in range(columns)}
+        ys = {1 + round((self.height - 3) * index / max(1, rows - 1))
+              for index in range(rows)}
+        px = max(3, min(self.width - 4, round(preferred[0])))
+        py = max(1, min(self.height - 2, round(preferred[1])))
+        candidates = [(px, py)] + [(x, y) for y in sorted(ys) for x in sorted(xs)]
+        candidates.sort(key=lambda pos: ((pos[0] - px) ** 2 + 4 * (pos[1] - py) ** 2,
+                                          pos[1], pos[0]))
+        for x, y in candidates:
+            if avoid_player and (abs(x - self.player.x) < 6
+                                 and abs(y - self.player.y) < 2):
+                continue
+            if not any(self._enemy_overlap(x, y, other) for other in others):
+                return float(x), float(y)
+        return None
+
+    def _separate_enemies(self) -> None:
+        # Natural words can be adjacent. Place them once before movement starts;
+        # later movement checks footprints instead of repeatedly pushing crowds.
+        placed: list[Enemy] = []
+        for enemy in self.enemies:
+            position = self._enemy_position((enemy.x, enemy.y), avoid_player=False,
+                                            others=placed)
+            if position is None:
+                # A centred natural word can consume two grid slots. Repack
+                # once if that prevents a full, physically feasible placement.
+                columns = self.width // 7
+                for index, actor in enumerate(self.enemies):
+                    actor.x = float(3 + (index % columns) * 7)
+                    actor.y = float(1 + (index // columns) * 2)
+                return
+            enemy.x, enemy.y = position
+            placed.append(enemy)
+
+    def _spawn_challenge_enemy(self, index: int) -> bool:
+        preferred = (3 + (self.width - 7) * (index % 3) / 2,
+                     max(4, (self.height - 2) * (index % 3 + 1) / 4))
+        position = self._enemy_position(preferred, avoid_player=True, others=self.enemies)
+        if position is None:
+            return False
+        x, y = position
+        letters = [Cell(int(x) - 2 + offset, int(y) - 1, char, Style(fg=196, bold=True))
+                   for offset, char in enumerate("ERROR")]
+        self.enemies.append(Enemy(x, y, cells=letters))
+        self.total += len(letters)
+        self.generated_enemies += 1
+        return True
+
+    def _spawn_challenge_enemies(self) -> None:
+        """Supplement an ERROR-free snapshot without removing any terrain."""
+        for index in range(min(3, self.enemy_target)):
+            if not self._spawn_challenge_enemy(index):
+                break
+
+    def _refill_enemies(self) -> None:
+        if (self.duration is None or self.finished
+                or self.round_elapsed < self.next_enemy_spawn):
+            return
+        # Use the real round clock, but never catch up missed waves after a stall.
+        self.next_enemy_spawn = self.round_elapsed + 2.0
+        if len(self.enemies) < self.enemy_target:
+            self._spawn_challenge_enemy(self.generated_enemies)
 
     def _remove(self, key: tuple[int, int]) -> Cell:
         cell = self.cells.pop(key)
@@ -197,10 +263,13 @@ class World:
             return
         self.direction = 1 if direction > 0 else -1
         self.player.facing = self.direction
+        self._traversal_move(self.direction)
         self.move_until = self.time + 0.16
 
     def jump(self) -> None:
         if self.finished or self.slamming:
+            return
+        if self._jump_from_grip():
             return
         if self.player.grounded or self.player.jumps < 2:
             self.player.vy = -21.0
@@ -211,6 +280,7 @@ class World:
     def drop(self) -> None:
         if self.finished:
             return
+        self._release_grip()
         self.drop_until = self.time + 0.22
         self.player.grounded = False
         self.player.vy = max(5.0, self.player.vy)
@@ -219,6 +289,7 @@ class World:
         """Reach isolated text again, retaining destruction and the round clock."""
         if self.finished:
             return
+        self._release_grip()
         self.player.y = 2.0
         self.player.vx = self.player.vy = 0.0
         self.player.grounded = False
@@ -229,6 +300,7 @@ class World:
     def punch(self) -> int:
         if self.finished or self.time < self.next_punch:
             return 0
+        self._release_grip()
         self.next_punch = self.time + 0.09
         self.attack_started = self.time
         self.attack_until = self.time + 0.11
@@ -240,6 +312,7 @@ class World:
     def blast(self) -> int:
         if self.finished or self.time < self.next_blast:
             return 0
+        self._release_grip()
         self.next_blast = self.time + 0.45
         self.attack_started = self.time
         self.attack_until = self.time + 0.16
@@ -252,6 +325,7 @@ class World:
     def dash(self) -> bool:
         if self.finished or self.slamming or self.time < self.next_dash:
             return False
+        self._release_grip()
         self.next_dash = self.time + 0.55
         self.dash_until = self.time + 0.19
         self._dash_direction = self.player.facing
@@ -265,6 +339,7 @@ class World:
         if (self.finished or self.slamming or self.player.grounded
                 or self.time < self.next_slam):
             return False
+        self._release_grip()
         self.next_slam = self.time + 0.5
         self.dash_until = self.move_until = 0.0
         self.slamming = True
@@ -426,19 +501,15 @@ class World:
         self._award(count, bonus=bonus)
         if count or bonus:
             self._sparks(x, y, count or 1)
-        self._check_cleared()
         return count
 
     def _finish(self, reason: str) -> None:
+        self._release_grip()
         self.finished = True
         self.finish_reason = reason
         self.slamming = False
         self.move_until = self.dash_until = 0.0
         self.player.vx = self.player.vy = 0.0
-
-    def _check_cleared(self) -> None:
-        if self.duration is not None and self.cleared:
-            self._finish("cleared")
 
     def update(self, dt: float) -> None:
         if self.finished or not math.isfinite(dt) or dt <= 0:
@@ -451,9 +522,9 @@ class World:
             step = min(remaining, 1 / 120)
             self._step(step)
             remaining -= step
-        self._check_cleared()
         if self.duration is not None and self.time_left <= 1e-9 and not self.finished:
             self._finish("time")
+        self._refill_enemies()
 
     def _step(self, dt: float) -> None:
         self.time += dt
@@ -461,72 +532,75 @@ class World:
             self.combo = 0
             self.multiplier = 1
         p = self.player
-        was_grounded = p.grounded
-        dashing = self.time < self.dash_until
-        if dashing:
-            p.vx = self._dash_direction * 110.0
-            p.vy = 0.0
-        elif self.time < self.move_until and not self.slamming:
-            p.vx = self.direction * 40.0
-        elif p.grounded:
-            # Terminal jump input replaces autorepeat: retain airborne momentum.
-            p.vx *= math.exp(-24.0 * dt)
-        elif not self.slamming and abs(p.vx) > 40:
-            p.vx = math.copysign(40.0, p.vx)
-        old_x = p.x
-        p.x = max(1.0, min(self.width - 2.0, p.x + p.vx * dt))
-        if dashing:
-            # A swept ellipse covers both endpoints, even on a slow frame.
-            self.destroy((old_x + p.x) / 2, p.y - 0.7,
-                         2.8 + abs(p.x - old_x) / 2, 1.7, enemy_damage=2)
-            if self.finished:
-                return
-            if self.time >= self._next_trail:
-                self.trails.append(Trail(p.x, p.y))
-                self.trails = self.trails[-32:]
-                self._next_trail = self.time + 0.018
-        old_y = p.y
-        p.vy = 0.0 if dashing else (68.0 if self.slamming else min(40.0, p.vy + 54.0 * dt))
-        next_y = old_y + p.vy * dt
-        p.grounded = False
-        impact_y = None
-        if p.vy >= 0:
-            floor = self.height - 2.0
-            landing = floor if next_y >= floor else None
-            if self.slamming or self.time >= self.drop_until:
-                x = int(round(p.x))
-                for row in range(max(0, math.ceil(old_y + 1 - 1e-7)),
-                                 min(self.height - 1, math.floor(next_y + 1)) + 1):
-                    if any((col, row) in self.occupied for col in (x - 1, x, x + 1)):
-                        candidate = float(row - 1)
-                        if candidate >= old_y - 1e-7:
-                            landing = candidate if landing is None else min(landing, candidate)
-                            break
-            if landing is not None:
-                next_y = landing
+        if not self._step_traversal(dt):
+            was_grounded = p.grounded
+            dashing = self.time < self.dash_until
+            if dashing:
+                p.vx = self._dash_direction * 110.0
                 p.vy = 0.0
-                p.grounded = True
-                p.jumps = 0
-                if not was_grounded:
-                    self.landing_until = self.time + (0.20 if self.slamming else 0.11)
-                if self.slamming:
-                    impact_y = next_y + 1
-        if next_y < 2.0:
-            next_y = 2.0
-            p.vy = max(0.0, p.vy)
-        p.y = next_y
-        if impact_y is not None:
-            self.slamming = False
-            self._wave(p.x, impact_y)
-            self.attack_until = self.time + 0.2
-            strength = 1 + (self.multiplier - 1) * 0.07
-            self.destroy(p.x, impact_y, 15.0 * strength, 4.0 * strength, enemy_damage=3)
-            if self.finished:
-                return
+            elif self.time < self.move_until and not self.slamming:
+                p.vx = self.direction * 40.0
+            elif p.grounded:
+                # Terminal jump input replaces autorepeat: retain airborne momentum.
+                p.vx *= math.exp(-24.0 * dt)
+            elif not self.slamming and abs(p.vx) > 40:
+                p.vx = math.copysign(40.0, p.vx)
+            old_x = p.x
+            p.x = max(1.0, min(self.width - 2.0, p.x + p.vx * dt))
+            if dashing:
+                # A swept ellipse covers both endpoints, even on a slow frame.
+                self.destroy((old_x + p.x) / 2, p.y - 0.7,
+                             2.8 + abs(p.x - old_x) / 2, 1.7, enemy_damage=2)
+                if self.finished:
+                    return
+                if self.time >= self._next_trail:
+                    self.trails.append(Trail(p.x, p.y))
+                    self.trails = self.trails[-32:]
+                    self._next_trail = self.time + 0.018
+            old_y = p.y
+            p.vy = 0.0 if dashing else (68.0 if self.slamming else min(40.0, p.vy + 54.0 * dt))
+            next_y = old_y + p.vy * dt
+            p.grounded = False
+            impact_y = None
+            if p.vy >= 0:
+                floor = self.height - 2.0
+                landing = floor if next_y >= floor else None
+                if self.slamming or self.time >= self.drop_until:
+                    x = int(round(p.x))
+                    for row in range(max(0, math.ceil(old_y + 1 - 1e-7)),
+                                     min(self.height - 1, math.floor(next_y + 1)) + 1):
+                        if any((col, row) in self.occupied for col in (x - 1, x, x + 1)):
+                            candidate = float(row - 1)
+                            if candidate >= old_y - 1e-7:
+                                landing = candidate if landing is None else min(landing, candidate)
+                                break
+                if landing is not None:
+                    next_y = landing
+                    p.vy = 0.0
+                    p.grounded = True
+                    p.jumps = 0
+                    if not was_grounded:
+                        self.landing_until = self.time + (0.20 if self.slamming else 0.11)
+                    if self.slamming:
+                        impact_y = next_y + 1
+            if next_y < 2.0:
+                next_y = 2.0
+                p.vy = max(0.0, p.vy)
+            p.y = next_y
+            if impact_y is not None:
+                self.slamming = False
+                self._wave(p.x, impact_y)
+                self.attack_until = self.time + 0.2
+                strength = 1 + (self.multiplier - 1) * 0.07
+                self.destroy(p.x, impact_y, 15.0 * strength, 4.0 * strength, enemy_damage=3)
+                if self.finished:
+                    return
         self._step_falling(dt)
         if self.finished:
             return
         self._step_enemies(dt)
+        if self.finished:
+            return
         alive = []
         for particle in self.particles:
             particle.life -= dt
@@ -578,7 +652,6 @@ class World:
             self._award(count + len(chunk.cells))
             self._sparks(x, y, count + len(chunk.cells))
             self._wave(x, y)
-        self._check_cleared()
 
     def _step_enemies(self, dt: float) -> None:
         p = self.player
@@ -586,10 +659,17 @@ class World:
             dx, dy = p.x - enemy.x, p.y - enemy.y
             if abs(dx) > 0.15:
                 enemy.facing = 1 if dx > 0 else -1
-                enemy.x += math.copysign(min(abs(dx), 7.5 * dt), dx)
-            enemy.y += math.copysign(min(abs(dy), 4.0 * dt), dy) if dy else 0
-            enemy.x = max(2.0, min(self.width - 3.0, enemy.x))
-            enemy.y = max(1.0, min(self.height - 2.0, enemy.y))
+            next_x = enemy.x + (math.copysign(min(abs(dx), 7.5 * dt), dx) if dx else 0)
+            next_y = enemy.y + (math.copysign(min(abs(dy), 4.0 * dt), dy) if dy else 0)
+            next_x = max(3.0, min(self.width - 4.0, next_x))
+            next_y = max(1.0, min(self.height - 2.0, next_y))
+            others = [other for other in self.enemies if other is not enemy]
+            # Slide along the unblocked axis, otherwise hold position. A blocked
+            # pursuer cannot squeeze into the label/body of the enemy ahead.
+            for x, y in ((next_x, next_y), (next_x, enemy.y), (enemy.x, next_y)):
+                if not any(self._enemy_overlap(x, y, other) for other in others):
+                    enemy.x, enemy.y = x, y
+                    break
             if (self.time > 1.0 and self.time >= self.hurt_until
                     and self.time >= enemy.hurt_until and self.time >= self.dash_until
                     and not self.slamming and abs(p.x - enemy.x) < 3.2
@@ -598,6 +678,11 @@ class World:
                 self.combo = 0
                 self.multiplier = 1
                 self.combo_until = 0.0
+                self._release_grip()
+                p.hp = max(0, p.hp - 1)
+                if p.hp == 0:
+                    self._finish("dead")
+                    return
                 p.vx = -26.0 if enemy.x >= p.x else 26.0
                 p.vy = -10.0
                 p.grounded = False

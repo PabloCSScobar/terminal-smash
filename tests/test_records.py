@@ -48,15 +48,18 @@ class RecordsTests(unittest.TestCase):
         self.assertEqual(records.load_best(self.key), 100)
         self.assertEqual(records.load_best(other), 20)
 
-    def test_generated_enemies_keep_old_enemy_free_records_separate(self):
-        other = records.arena_key(self.cells, 80, 24, generated_enemies=3)
-        self.assertNotEqual(other, self.key)
-        self.assertEqual(self.key, records.arena_key(self.cells, 80, 24, generated_enemies=0))
-        records.save_best(self.key, 100)
-        self.assertEqual(records.load_best(other), 0)
-        records.save_best(other, 30)
-        self.assertEqual(records.load_best(self.key), 100)
-        self.assertEqual(records.load_best(other), 30)
+    def test_survival_rules_keep_both_previous_record_categories_separate(self):
+        # Fingerprints produced by v0.4.1 for setUp's exact cells and dimensions.
+        legacy_keys = ('ec8d26a1a214eb1019685270ee2b76f225bcc26f84e399ede554bff315773700',
+                       'fa1949b9276f08c26143d24896f624afe3ca59e60069715d46f3a3cb599837c3')
+        for key in legacy_keys:
+            self.assertNotEqual(key, self.key)
+            records.save_best(key, 100)
+        self.assertEqual(records.load_best(self.key), 0)
+        records.save_best(self.key, 30)
+        for key in legacy_keys:
+            self.assertEqual(records.load_best(key), 100)
+        self.assertEqual(records.load_best(self.key), 30)
 
     def test_missing_file_reads_zero_without_creating_anything(self):
         self.assertEqual(records.load_best(self.key), 0)

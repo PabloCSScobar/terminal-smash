@@ -285,8 +285,9 @@ class ArcadePhysicsTests(unittest.TestCase):
         for width, height in ((1, 1), (8, 6), (9, 7), (44, 9), (80, 25), (300, 100)):
             with self.subTest(width=width, height=height):
                 world = World([], width, height, duration=30)
-                self.assertEqual(len(world.enemies), 3)
-                self.assertEqual(len({(e.x, e.y) for e in world.enemies}), 3)
+                self.assertGreater(len(world.enemies), 0)
+                self.assertLessEqual(len(world.enemies), 3)
+                self.assertEqual(len({(e.x, e.y) for e in world.enemies}), len(world.enemies))
                 for enemy in world.enemies:
                     self.assertGreaterEqual(enemy.x - 2, 0)
                     self.assertLessEqual(enemy.x + 2, world.width - 1)
@@ -316,8 +317,7 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertEqual(world.destroyed, 15)
         self.assertEqual(world.generated_enemies, 3)
         self.assertTrue(world.cleared)
-        self.assertTrue(world.finished)
-        self.assertEqual(world.finish_reason, 'cleared')
+        self.assertFalse(world.finished)
         world.update(1)
         self.assertFalse(world.enemies)
         self.assert_conserved(world)
@@ -358,7 +358,7 @@ class ArcadePhysicsTests(unittest.TestCase):
         self.assertEqual(world.cells, terrain)
         self.assertEqual(world.score, 0)
 
-    def test_clear_waits_for_falling_and_enemies_then_freezes_only_challenge(self):
+    def test_clear_waits_for_falling_and_enemies_without_ending_survival(self):
         for duration in (None, 30):
             world = World([Cell(10, 5, '='), Cell(10, 6, '|')], 50, 25, duration=duration)
             world.destroy(10, 6, 0.4, 0.4)
@@ -372,18 +372,16 @@ class ArcadePhysicsTests(unittest.TestCase):
                 world.destroy(world.width / 2, world.height / 2,
                               world.width, world.height, enemy_damage=2)
             self.assertTrue(world.cleared)
-            self.assertEqual(world.finished, duration is not None)
+            self.assertFalse(world.finished)
             self.assertEqual(world.destroyed, world.total)
             self.assert_conserved(world)
-            if duration is not None:
-                self.assertEqual(world.finish_reason, 'cleared')
         world = World(parse_capture('ERROR', 50, 25), 50, 25, duration=30)
         self.assertFalse(world.cleared)
         self.assertFalse(world.finished)
         enemy = world.enemies[0]
         world.destroy(enemy.x, enemy.y - 1, 3, 2, enemy_damage=2)
-        self.assertTrue(world.finished)
-        self.assertEqual(world.finish_reason, 'cleared')
+        self.assertFalse(world.finished)
+        self.assertTrue(world.cleared)
 
     def test_reset_clears_arcade_state_and_preserves_challenge_and_snapshot(self):
         cells = parse_capture('ERROR\n==========\n   |', 60, 25)

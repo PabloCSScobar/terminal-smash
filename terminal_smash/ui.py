@@ -87,12 +87,14 @@ def _put(win, y: int, x: int, text: str, attr: int = 0) -> None:
 
 HELP_LINES = [
     'A / D or arrows   run / steer in the air',
-    'W / up / space    jump (twice!)',
+    'W / up            jump / climb up a wall',
+    'Space             jump / release wall or ceiling',
+    'E                 toggle wall and ceiling grip',
     'J                 punch',
     'K                 blast',
     'L                 dash through text',
     'X                 aerial ground slam',
-    'S / down          drop through a line',
+    'S / down          descend wall / drop / release',
     'T / Home          return to the top',
     'C                 switch FREE / 30s CHALLENGE',
     'G                 falling ON/OFF (restarts)',
@@ -103,7 +105,8 @@ HELP_LINES = [
     'Chain hits for x2..x5 score and stronger hits.',
     'Break supports: falling text starts a cascade.',
     'ERROR bugs chase you. Hit them before they hit you!',
-    'CHALLENGE spawns ERRORs even in plain text.',
+    'CHALLENGE keeps spawning ERRORs until time runs out.',
+    'Five health points. No health = game over.',
     '',
     'Only a copy of the screen is destroyed.',
     'The underlying session keeps running.',
@@ -212,8 +215,7 @@ class RoundRecord:
 
     def __init__(self, world: World):
         self.key = arena_key(list(world.original), world.width, world.height,
-                             falling_enabled=world.falling_enabled,
-                             generated_enemies=world.generated_enemies)
+                             falling_enabled=world.falling_enabled)
         self.best = 0
         self.saved = False
         self.new_record = False
@@ -251,6 +253,12 @@ def _actor_pose(world: World) -> list[tuple[int, int, str]]:
         return [(0, -2, 'O'), (-1 if p.facing > 0 else -3, -1, '-|==>' if p.facing > 0 else '<==|-'), (-1, 0, '/ \\')]
     if world.time < world.landing_until:
         return [(0, -1, 'O'), (-1, 0, '/v\\')]
+    if world.grip_surface == 'ceiling':
+        return [(-1, -2, '| |'), (0, -1, 'O'), (-1, 0, '/|\\')]
+    if world.grip_surface in ('left', 'right'):
+        left = world.grip_surface == 'left'
+        return [(0, -2, 'O'), (-1, -1, '=|' if left else '|='),
+                (-1, 0, '/|' if left else '|\\')]
     if not p.grounded:
         phase = int(max(0, world.time - world.jump_started) * 12) % 4
         if p.jumps >= 2:
@@ -280,11 +288,15 @@ def _round_over(win, world: World, palette: Palette, record: RoundRecord | None)
     attr = palette.attr(Style(fg=15, bg=17, bold=True))
     for row in range(7):
         _put(win, top + row, left, ' ' * width, attr)
-    lines = ['ROUND OVER - ' + ('SCREEN CLEARED!' if world.finish_reason == 'cleared' else 'TIME UP!'),
+    dead = world.finish_reason == 'dead'
+    title = 'GAME OVER - NO HEALTH!' if dead else 'ROUND OVER - TIME UP!'
+    best = f'Best: {record.best if record else 0}' + ('  NEW RECORD!' if record and record.new_record else '')
+    switch = 'free play' if world.duration is not None else 'challenge'
+    lines = [title,
              f'Score: {world.score}    Smashed: {world.destroyed}/{world.total}',
-             f'Best: {record.best if record else 0}' + ('  NEW RECORD!' if record and record.new_record else ''),
+             best if world.duration is not None else f'Health: {world.player.hp}/{world.player.max_hp}',
              'Local record unavailable' if record and record.error else 'Your terminal session is still running.',
-             '[R] retry  [C] free play  [Esc] return']
+             f'[R] retry  [C] {switch}  [Esc] return']
     for i, line in enumerate(lines):
         _put(win, top + 1 + i, left + 2, line[:width - 4], attr)
 
@@ -330,19 +342,28 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
     p = world.player
     actor_attr = palette.attr(Style(fg=196, bold=True)) if world.time < world.hurt_until else powered
     for dx, dy, glyph in _actor_pose(world):
-        scene(round(p.y) + dy + 2, max(0, round(p.x) + dx), glyph, actor_attr, len(glyph))
+        scene(round(p.y) + dy + 2, max(0, min(cols - len(glyph), round(p.x) + dx)),
+              glyph, actor_attr, len(glyph))
     if world.multiplier >= 3:
         for dx in (-3, 3):
             scene(round(p.y) + 1, round(p.x) + dx, '+' if int(world.time * 8) % 2 else '.', powered)
 
+    health_color = 82 if p.hp > 2 else (220 if p.hp > 1 else 196)
+    health_attr = palette.attr(Style(fg=health_color, bold=True))
+    health_bar = '[' + '#' * p.hp + '-' * (p.max_hp - p.hp) + ']'
+    # At the ceiling there is no spare row above the head; the HUD stays visible.
+    scene(round(p.y) - 1, max(0, min(cols - len(health_bar), round(p.x) - len(health_bar) // 2)),
+          health_bar, health_attr, len(health_bar))
+
     # UI is drawn last so effects never cover controls or score.
     _put(win, 0, 0, ' TERMINAL SMASH ', palette.attr(Style(fg=16, bg=51, bold=True)))
+    _put(win, 0, 17, f'HP {p.hp}/{p.max_hp} {health_bar}', health_attr)
     score = f'SCORE {world.score}'
     if record and world.duration is not None and cols >= 62:
         score += f'  BEST {record.best}'
-    _put(win, 0, max(17, cols - len(score) - 1), score, yellow)
+    _put(win, 0, max(33, cols - len(score) - 1), score, yellow)
     if cols >= 100:
-        _put(win, 0, 17, label[:max(0, cols - len(score) - 20)], dim)
+        _put(win, 0, 33, label[:max(0, cols - len(score) - 36)], dim)
     mode = 'FREE PLAY' if world.duration is None else f'CHALLENGE {world.time_left:04.1f}s'
     _put(win, 1, 0, mode, yellow if world.time_left is not None and world.time_left < 10 else cyan)
     ratio = world.destroyed * 100 // world.total if world.total else 0
@@ -353,18 +374,19 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
     _put(win, rows - 3, 0, '_' * cols, dim)
     if world.finished:
         _round_over(win, world, palette, record)
-    elif world.total and world.cleared:
+    elif world.duration is None and world.total and world.cleared:
         _put(win, max(3, rows // 2), max(0, (cols - 37) // 2), 'ALL SMASHED! R rebuild / C challenge', yellow)
     elif not world.total:
         _put(win, max(3, rows // 2), 1, 'Empty snapshot. Esc, run a command, retry.', dim)
-    hint = ' A/D run  SPACE jump  J hit  K blast  L dash  X slam  C 30s  ? help  ESC '
+    hint = ' A/D run  SPACE jump  E grip  J hit K blast  L dash X slam  C 30s ? ESC '
     if cols < len(hint):
-        hint = ' A/D SPACE J/K L dash X slam C 30s ? ESC '
+        hint = ' A/D SPACE E grip J/K L X C ? ESC '
     _put(win, rows - 2, 0, hint, cyan)
     blast = 'recharging' if world.time < world.next_blast else 'ready'
     dash = 'recharging' if world.time < world.next_dash else 'ready'
     gravity = 'ON' if world.falling_enabled else 'OFF'
-    note = f' G falling {gravity} | K blast {blast} | T top R reset'
+    grip = 'ON' if world.grip_enabled else 'OFF'
+    note = f' G falling {gravity} | E grip {grip} | K blast {blast} | T top R reset'
     if cols >= len(note) + len(dash) + 10:
         note += f' | L {dash}'
     if record and record.error:
@@ -377,14 +399,17 @@ def _draw(win, world: World, palette: Palette, label: str, help_open: bool,
 
 
 def _new_world(text: str, rows: int, cols: int, challenge: bool,
-               falling_enabled: bool = True, *, demo: bool = False) -> World:
+               falling_enabled: bool = True, *, demo: bool = False,
+               grip_enabled: bool = False) -> World:
     if demo:
         text = build_demo(cols, rows - 5)
     content_rows = text.rstrip('\r\n').count('\n') + 1
     start_row = max(0, content_rows - (rows - 5))
     cells = parse_capture(text, cols, rows - 5, start_row=start_row)
-    return World(cells, cols, rows - 4, duration=ROUND_DURATION if challenge else None,
-                 falling_enabled=falling_enabled)
+    world = World(cells, cols, rows - 4, duration=ROUND_DURATION if challenge else None,
+                  falling_enabled=falling_enabled)
+    world.grip_enabled = grip_enabled
+    return world
 
 
 def _main(win, text: str, label: str, challenge: bool = False,
@@ -401,6 +426,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
     world = None
     record = None
     dimensions = None
+    grip_enabled = False
     help_open = False
     help_page = 0
     last = time.monotonic()
@@ -412,7 +438,8 @@ def _main(win, text: str, label: str, challenge: bool = False,
         rebuilt = False
         if playable and dimensions != (rows, cols):
             dimensions = (rows, cols)
-            world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
+            world = _new_world(text, rows, cols, challenge, falling_enabled,
+                               demo=demo, grip_enabled=grip_enabled)
             record = RoundRecord(world)
             rebuilt = True
         # Advance the old state before accepting new actions, so a key arriving
@@ -443,12 +470,14 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 continue
             if key in (ord('c'), ord('C')):
                 challenge = not challenge
-                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
+                world = _new_world(text, rows, cols, challenge, falling_enabled,
+                               demo=demo, grip_enabled=grip_enabled)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('g'), ord('G')):
                 falling_enabled = not falling_enabled
-                world = _new_world(text, rows, cols, challenge, falling_enabled, demo=demo)
+                world = _new_world(text, rows, cols, challenge, falling_enabled,
+                               demo=demo, grip_enabled=grip_enabled)
                 record = RoundRecord(world)
                 rebuilt = True
             elif key in (ord('r'), ord('R')):
@@ -459,10 +488,15 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 world.move(-1)
             elif key in (ord('d'), ord('D'), curses.KEY_RIGHT):
                 world.move(1)
-            elif key in (ord('w'), ord('W'), ord(' '), curses.KEY_UP):
+            elif key in (ord('e'), ord('E')):
+                world.toggle_grip()
+                grip_enabled = world.grip_enabled
+            elif key in (ord('w'), ord('W'), curses.KEY_UP):
+                world.climb_up()
+            elif key == ord(' '):
                 world.jump()
             elif key in (ord('s'), ord('S'), curses.KEY_DOWN):
-                world.drop()
+                world.climb_down()
             elif key in (ord('j'), ord('J')):
                 world.punch()
             elif key in (ord('k'), ord('K')):
@@ -473,7 +507,7 @@ def _main(win, text: str, label: str, challenge: bool = False,
                 world.slam()
             elif key in (ord('t'), ord('T'), curses.KEY_HOME):
                 world.return_to_top()
-            # Save a clear immediately, before another queued key can restart
+            # Save a finished round before another queued key can restart
             # the scene, switch modes or exit in this same input batch.
             record.finish(world)
         if rebuilt:

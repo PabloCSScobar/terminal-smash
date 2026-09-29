@@ -33,12 +33,14 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 | Klawisz | Działanie |
 | --- | --- |
 | A / D lub ← / → | Ruch |
-| W, ↑ lub Spacja | Skok z zachowaniem rozpędu (także podwójny) |
+| W / ↑ | Skok z zachowaniem rozpędu; podczas chwytu wspinanie po ścianie |
+| Spacja | Skok (także podwójny); puszczenie ściany lub sufitu |
+| E | Włączenie/wyłączenie chwytu bocznych ścian i sufitu |
 | J | Uderzenie w stronę ruchu |
 | K | Wybuch wokół postaci |
 | L | Dash w stronę ruchu, także w powietrzu |
 | X | Uderzenie z powietrza w dół |
-| S lub ↓ | Zejście przez platformę |
+| S / ↓ | Zejście przez platformę, w dół po ścianie lub puszczenie sufitu |
 | T lub Home | Powrót postaci na górę bez odtwarzania tekstu |
 | R | Odtworzenie tekstu i nowa runda w aktualnym trybie |
 | C | Przełączenie swobodnej demolki / rundy 30 s i nowy start |
@@ -48,9 +50,11 @@ PowerShell może otworzyć wersję linuksową przez `wsl`; grę i tmux uruchamia
 
 Skok podczas biegu zachowuje ruch poziomy aż do lądowania. W powietrzu możesz zmienić kierunek przez A/D lub strzałki; skok z miejsca pozostaje pionowy. Połącz skok, dash i uderzenie w dół, aby dobrać się do podpór pod kilkoma piętrami tekstu.
 
-Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Kontakt z przeciwnikiem `ERROR` odrzuca postać i przerywa serię; dash oraz uderzenie w dół pozwalają przebić się przez niego.
+Combo zwiększa mnożnik do x5 i wzmacnia zasięg ataków. Postać ma **5 punktów życia**, pokazanych w nagłówku oraz paskiem nad głową (przy samym suficie pozostaje wskaźnik w nagłówku). Kontakt z przeciwnikiem `ERROR` zabiera jeden punkt, odrzuca postać i przerywa serię. Po trafieniu działa krótka ochrona przed kolejnymi obrażeniami; dash oraz uderzenie w dół pozwalają przebić się przez przeciwnika. Przy zerowym życiu pojawia się **GAME OVER**; **R** odtwarza tekst, przeciwników i pełne życie.
 
 Przy ustawieniu **G falling ON** naruszone fragmenty tracące ostatnią podporę spadają i rozbijają niższe linie. Przy **OFF** nietrafione znaki pozostają w powietrzu i nadal można po nich chodzić. Zmiana klawiszem **G** rozpoczyna planszę i wynik od nowa; wybór pozostaje aktywny po **R**, **C** i zmianie rozmiaru okna. Tekst wiszący od początku migawki pozostaje na miejscu do chwili naruszenia, więc plansza nie rozsypuje się sama po starcie.
+
+**E** włącza chwyt bez restartowania gry. Dojdź do lewego lub prawego brzegu, aby złapać boczną ścianę, i używaj **W/↑** do wspinania, **S/↓** do schodzenia. Bez naciskania klawiszy postać trzyma się ściany. Na górze przechodzi na sufit: **A/D** przesuwa ją nad wybraną platformę, a **Spacja** lub **S/↓** pozwala spaść na tekst. Spacja na ścianie odbija do środka planszy; ruch od ściany także ją puszcza. Dash, slam, wyłączenie chwytu i trafienie przeciwnika zwalniają chwyt. Ustawienie **E grip ON/OFF** pozostaje po **R**, **C**, **G** i zmianie rozmiaru okna.
 
 Demo dopasowuje ilość tekstu do rozmiaru okna. Po obu bokach są schodki od podłogi do górnej części planszy, oddalone maksymalnie o trzy wiersze; można wspinać się zwykłymi skokami. Schodki również da się zniszczyć. **T/Home** pozostaje szybkim powrotem na górę.
 
@@ -75,11 +79,11 @@ python3 -m terminal_smash --demo # uruchomienie z katalogu źródeł
 
 Challenge działa również na tekście własnej sesji tmux: otwórz grę skrótem **Ctrl+b, potem Shift+s** i naciśnij **C**, albo wpisz w panelu `terminal-smash --challenge`. `--session` służy tylko do otwarcia sesji tmux; rundę włączasz już w jej środku.
 
-Jeśli migawka nie zawiera przeciwników ze słów `ERROR`, challenge dodaje **trzech przeciwników** na początku rundy, także na pustej planszy. Można ich pokonać zwykłymi atakami; muszą zniknąć wraz z tekstem, aby wyczyścić planszę przed końcem czasu. **R** odtwarza rundę z przeciwnikami. Swobodna demolka nadal ożywia tylko słowa `ERROR` obecne w tekście.
+Challenge regularnie uzupełnia przeciwników, również gdy tekst nie zawiera słowa `ERROR`. Bez naturalnych przeciwników startuje trzech; brakujące miejsca są uzupełniane po jednym co około **2 sekundy**. Wrogowie mają odstęp między sobą, aby ich napisy nie zlewały się w jeden. Liczba jednoczesnych przeciwników jest ograniczona do maksymalnie ośmiu, więc kolejne odrodzenia nie zwiększają obciążenia bez końca. Swobodna demolka ożywia tylko słowa `ERROR` obecne w migawce i nie generuje następnych.
 
-Runda trwa do 30 sekund aktywnej gry; pełne wyczyszczenie planszy kończy ją wcześniej. Buduj combo kolejnymi trafieniami i zawaleniami, aby zwiększać mnożnik punktów. Po końcu rundy wynik zostaje na ekranie; **R** rozpoczyna kolejną próbę, a **C** wraca do swobodnej demolki. Pomoc pod **?** zatrzymuje czas. Zmiana rozmiaru terminala rozpoczyna nową rundę i odtwarza tekst.
+Runda trwa **30 sekund aktywnej gry lub do utraty życia**. Zniszczenie całego tekstu i aktualnych przeciwników nie kończy challenge: następni nadal się pojawiają. Buduj combo i wynik, aż skończy się czas. Po końcu wynik zostaje na ekranie; **R** rozpoczyna kolejną próbę, a **C** przełącza tryb gry. Pomoc pod **?** zatrzymuje czas. Zmiana rozmiaru terminala rozpoczyna nową rundę i odtwarza tekst.
 
-Rekord jest osobny dla tej samej planszy, rozmiaru terminala i ustawienia spadania tekstu. Rundy z dodanymi przeciwnikami mają osobne rekordy względem starszej wersji bez nich. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
+Rekord jest osobny dla tej samej planszy, rozmiaru terminala i ustawienia spadania tekstu. Nowe zasady z życiem i odradzaniem przeciwników mają osobne rekordy względem starszych wersji; liczba odrodzeń podczas rundy nie zmienia jej kategorii. Program zapisuje wyłącznie skrót SHA-256 planszy, wynik i czas aktualizacji w `~/.local/state/terminal-smash/records.json` (respektuje `XDG_STATE_HOME`), bez treści terminala. Zachowuje maksymalnie 256 ostatnio używanych plansz. Kilka jednoczesnych sesji może bezpiecznie aktualizować rekordy. Jeśli zapis jest niedostępny, gra działa dalej i pokazuje informację na ekranie.
 
 ## Instalacja i usunięcie
 
